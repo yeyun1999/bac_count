@@ -1,0 +1,387 @@
+"""主窗口：工具栏 + 左预览画布 + 右参数面板 + 状态栏。"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import cv2
+import numpy as np
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QDoubleSpinBox,
+    QFileDialog,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QToolBar,
+)
+
+from bac_count.core.edits import EditHistory
+from bac_count.core.export import export_csv, export_json, export_png
+from bac_count.core.models import Colony, merge
+from bac_count.core.pipeline import POST_SCHEMA, PRE_SCHEMA, WORKING_MAX, default_params
+from bac_count.core.preprocess import IMG_EXTS, load_image
+from bac_count.core.registry import DETECTORS, get_detector
+from bac_count.ui.canvas import MODE_ADD, MODE_BROWSE, MODE_REMOVE, Canvas, bgra_to_qpixmap
+from bac_count.ui.param_panel import ParamPanel
+from bac_count.ui.presets import load_preset, save_preset
+from bac_count.ui.worker import DetectionService
+
+DEBOUNCE_MS = 150
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("平板菌落计数")
+        self.resize(1440, 900)
+
+        self.params: dict = default_params()
+        self.images: list[Path] = []
+        self.idx: int = -1
+        self.histories: dict[str, EditHistory] = {}
+        self.bgr: np.ndarray | None = None
+        self.alpha: np.ndarray | None = None
+        self.scale: float = 1.0
+        self.last_auto: list[Colony] = []
+        self._seq = 0
+        self._busy = False
+        self._pending = False
+
+        self.canvas = Canvas(self)
+        self.setCentralWidget(self.canvas)
+        self.canvas.emptyClicked.connect(self._on_add_click)
+        self.canvas.colonyClicked.connect(self._on_remove_click)
+
+        self.panel = ParamPanel(self)
+        self.panel.valueChanged.connect(self._on_param_changed)
+        dock = QDockWidget("检测参数", self)
+        dock.setObjectName("param_dock")
+        dock.setWidget(self.panel)
+        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        dock.setMinimumWidth(340)
+        self.resizeDocks([dock], [380], Qt.Horizontal)
+
+        self._build_toolbar()
+        self._build_status()
+        self._rebuild_panel()
+
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(DEBOUNCE_MS)
+        self._debounce.timeout.connect(self.request_detection)
+
+        self.service = DetectionService(self)
+        self.service.worker.done.connect(self._on_detection_done)
+
+    # ------------------------------------------------------------------ 工具栏
+    def _build_toolbar(self) -> None:
+        tb = QToolBar("主工具栏")
+        tb.setMovable(False)
+        self.addToolBar(tb)
+
+        def act(text, slot, shortcut=None, checkable=False, group=None) -> QAction:
+            a = QAction(text, self)
+            if callable(slot):
+                a.triggered.connect(slot)
+            if shortcut:
+                a.setShortcut(QKeySequence(shortcut))
+            a.setCheckable(checkable)
+            if group is not None:
+                group.addAction(a)
+            tb.addAction(a)
+            return a
+
+        act("打开图片", self.open_files)
+        act("打开文件夹", self.open_folder)
+        tb.addSeparator()
+        act("◀ 上一张", lambda: self._navigate(-1), "Alt+Left")
+        act("下一张 ▶", lambda: self._navigate(1), "Alt+Right")
+        tb.addSeparator()
+
+        mode_group = QActionGroup(self)
+        mode_group.setExclusive(True)
+        self._a_browse = act("浏览", lambda: self._set_mode(MODE_BROWSE), "1", True, mode_group)
+        self._a_add = act("添加", lambda: self._set_mode(MODE_ADD), "2", True, mode_group)
+        self._a_remove = act("删除", lambda: self._set_mode(MODE_REMOVE), "3", True, mode_group)
+        self._a_browse.setChecked(True)
+        tb.addSeparator()
+
+        lbl = QLabel(" 手动半径 ")
+        tb.addWidget(lbl)
+        self.spin_radius = QDoubleSpinBox()
+        self.spin_radius.setRange(1.0, 100.0)
+        self.spin_radius.setValue(6.0)
+        self.spin_radius.setSuffix(" px")
+        tb.addWidget(self.spin_radius)
+        tb.addSeparator()
+
+        self._a_undo = act("撤销", self._undo, "Ctrl+Z")
+        self._a_redo = act("重做", self._redo, "Ctrl+Y")
+        self._a_undo.setEnabled(False)
+        self._a_redo.setEnabled(False)
+        act("清除编辑", self._clear_edits)
+        tb.addSeparator()
+        act("放大", lambda: self.canvas.zoom(1.25), QKeySequence.ZoomIn)
+        act("缩小", lambda: self.canvas.zoom(1 / 1.25), QKeySequence.ZoomOut)
+        act("适应窗口", self.canvas.fit_view, "0")
+        tb.addSeparator()
+        act("导出 PNG", self.export_png)
+        act("导出 CSV", self.export_csv)
+        act("导出 JSON", self.export_json)
+        tb.addSeparator()
+        act("保存预设", self.save_preset)
+        act("加载预设", self.load_preset)
+        act("恢复默认", self.reset_params)
+
+    def _build_status(self) -> None:
+        self._lbl_count = QLabel("计数: —")
+        self._lbl_detail = QLabel("")
+        self._lbl_image = QLabel("未加载图片")
+        sb = self.statusBar()
+        sb.addWidget(self._lbl_count)
+        sb.addWidget(self._lbl_detail, 1)
+        sb.addPermanentWidget(self._lbl_image)
+
+    # ------------------------------------------------------------------ 打开
+    def open_files(self) -> None:
+        exts = " ".join(f"*{e}" for e in sorted(IMG_EXTS))
+        files, _ = QFileDialog.getOpenFileNames(self, "打开图片", str(Path.cwd()), f"图片 ({exts})")
+        if files:
+            self.load_paths([Path(f) for f in files])
+
+    def open_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "打开文件夹", str(Path.cwd()))
+        if not d:
+            return
+        files = sorted(p for p in Path(d).iterdir() if p.suffix.lower() in IMG_EXTS)
+        if not files:
+            QMessageBox.information(self, "提示", "该文件夹内没有支持的图片。")
+            return
+        self.load_paths(files)
+
+    def load_paths(self, paths: list[Path]) -> None:
+        self.images = list(paths)
+        self.idx = 0
+        self.load_current()
+
+    def _navigate(self, step: int) -> None:
+        if not self.images:
+            return
+        self.idx = max(0, min(len(self.images) - 1, self.idx + step))
+        self.load_current()
+
+    def load_current(self) -> None:
+        path = self.images[self.idx]
+        try:
+            self.bgr, self.alpha = load_image(path)
+        except ValueError as e:
+            QMessageBox.warning(self, "读取失败", str(e))
+            return
+        h, w = self.bgr.shape[:2]
+        self.scale = min(1.0, WORKING_MAX / max(h, w))
+        if self.scale < 1.0:
+            wb = cv2.resize(self.bgr, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA)
+            wa = cv2.resize(self.alpha, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_NEAREST)
+        else:
+            wb, wa = self.bgr, self.alpha
+        self.canvas.set_image(bgra_to_qpixmap(wb, wa))
+        self.last_auto = []
+        self._lbl_image.setText(f"{self.idx + 1}/{len(self.images)}  {path.name}  ({w}×{h})")
+        self._update_edit_actions()
+        self.request_detection()
+
+    # ------------------------------------------------------------------ 检测调度
+    def request_detection(self) -> None:
+        self._debounce.stop()
+        if self.bgr is None:
+            return
+        if self._busy:
+            self._pending = True
+            return
+        self._busy = True
+        self._seq += 1
+        self.service.worker.submit.emit(self._seq, self.bgr, self.alpha, dict(self.params))
+
+    def _on_detection_done(self, seq: int, colonies: list) -> None:
+        if seq < self._seq:
+            return  # 过期结果
+        self.last_auto = colonies
+        self._busy = False
+        self._refresh_merge()
+        if self._pending:
+            self._pending = False
+            self.request_detection()
+
+    # ------------------------------------------------------------------ 编辑
+    def _history(self) -> EditHistory:
+        return self.histories.setdefault(str(self.images[self.idx]), EditHistory())
+
+    def _refresh_merge(self) -> None:
+        result = merge(self.last_auto, self._history().state)
+        self.canvas.set_colonies(result.colonies, self.scale)
+        self._lbl_count.setText(f"计数: {result.count}")
+        self._lbl_detail.setText(
+            f"自动 {result.auto_total}（保留 {result.kept} / 排除 {result.removed}）  手动 +{result.added}"
+        )
+        self._update_edit_actions()
+
+    def _on_add_click(self, sx: float, sy: float) -> None:
+        x, y = sx / self.scale, sy / self.scale
+        self._history().add_colony(x, y, float(self.spin_radius.value()))
+        self._refresh_merge()
+
+    def _on_remove_click(self, colony: Colony) -> None:
+        result = merge(self.last_auto, self._history().state)
+        if self._history().remove_at(colony.x, colony.y, result.colonies, default_r=max(colony.r, 10)):
+            self._refresh_merge()
+
+    def _undo(self) -> None:
+        if self._history().undo():
+            self._refresh_merge()
+
+    def _redo(self) -> None:
+        if self._history().redo():
+            self._refresh_merge()
+
+    def _clear_edits(self) -> None:
+        self._history().clear_edits()
+        self._refresh_merge()
+
+    def _update_edit_actions(self) -> None:
+        h = self._history() if self.images else EditHistory()
+        self._a_undo.setEnabled(h.can_undo())
+        self._a_redo.setEnabled(h.can_redo())
+
+    def _set_mode(self, mode: str) -> None:
+        self.canvas.set_mode(mode)
+
+    # ------------------------------------------------------------------ 参数面板
+    def _full_schema(self):
+        from dataclasses import replace
+
+        displays = [DETECTORS[k].display for k in DETECTORS]
+        specs = [replace(s, choices=displays) if s.key == "algorithm" else s for s in PRE_SCHEMA]
+        algo = self.params.get("algorithm", "adaptive")
+        return specs + POST_SCHEMA + get_detector(algo).schema()
+
+    def _rebuild_panel(self) -> None:
+        values = dict(self.params)
+        algo = values.get("algorithm", "adaptive")
+        if algo in DETECTORS:
+            values["algorithm"] = DETECTORS[algo].display
+        self.panel.set_schema(self._full_schema(), values)
+
+    def _on_param_changed(self, key: str, value) -> None:
+        if key == "algorithm":
+            display = value
+            name = next((k for k in DETECTORS if DETECTORS[k].display == display), None)
+            if name:
+                self.params["algorithm"] = name
+            self._rebuild_panel()
+            self.request_detection()
+            return
+        self.params[key] = value
+        self._debounce.start()
+
+    def save_preset(self) -> None:
+        name, ok = _text_dialog(self, "保存预设", "预设名称：", "my_preset")
+        if ok and name:
+            p = save_preset(name, self.params)
+            self.statusBar().showMessage(f"预设已保存: {p}", 4000)
+
+    def load_preset(self) -> None:
+        exts = " ".join(f"*{e}" for e in sorted(IMG_EXTS))
+        f, _ = QFileDialog.getOpenFileName(self, "加载预设", str(Path.home() / ".bac_count" / "presets"), "JSON (*.json)")
+        if not f:
+            return
+        try:
+            data = load_preset(f)
+        except Exception as e:
+            QMessageBox.warning(self, "加载失败", str(e))
+            return
+        self.params.update(data)
+        self._rebuild_panel()
+        self.request_detection()
+
+    def reset_params(self) -> None:
+        self.params = default_params(self.params.get("algorithm", "adaptive"))
+        self._rebuild_panel()
+        self.request_detection()
+
+    # ------------------------------------------------------------------ 导出
+    def _export_dir(self) -> Path:
+        return self.images[self.idx].parent if self.images else Path.cwd()
+
+    def _current_result(self):
+        return merge(self.last_auto, self._history().state)
+
+    def export_png(self) -> None:
+        if self.bgr is None:
+            return
+        r = self._current_result()
+        default = str(self._export_dir() / f"{self.images[self.idx].stem}_count{r.count}.png")
+        f, _ = QFileDialog.getSaveFileName(self, "导出标注图", default, "PNG (*.png)")
+        if f:
+            export_png(f, self.bgr, r.colonies)
+            self.statusBar().showMessage(f"已导出 {f}", 4000)
+
+    def export_csv(self) -> None:
+        if self.bgr is None:
+            return
+        r = self._current_result()
+        default = str(self._export_dir() / f"{self.images[self.idx].stem}.csv")
+        f, _ = QFileDialog.getSaveFileName(self, "导出 CSV", default, "CSV (*.csv)")
+        if f:
+            export_csv(f, r.colonies, self.images[self.idx].name)
+            self.statusBar().showMessage(f"已导出 {f}", 4000)
+
+    def export_json(self) -> None:
+        if self.bgr is None:
+            return
+        r = self._current_result()
+        default = str(self._export_dir() / f"{self.images[self.idx].stem}.json")
+        f, _ = QFileDialog.getSaveFileName(self, "导出 JSON", default, "JSON (*.json)")
+        if f:
+            export_json(f, r.colonies, self._history().state, self.params, self.images[self.idx].name)
+            self.statusBar().showMessage(f"已导出 {f}", 4000)
+
+    def closeEvent(self, ev) -> None:
+        self.service.stop()
+        super().closeEvent(ev)
+
+
+def _text_dialog(parent, title, label, default=""):
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLineEdit, QVBoxLayout
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    lay = QVBoxLayout(dlg)
+    le = QLineEdit(default)
+    lay.addWidget(QLabel(label))
+    lay.addWidget(le)
+    bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    bb.accepted.connect(dlg.accept)
+    bb.rejected.connect(dlg.reject)
+    lay.addWidget(bb)
+    ok = dlg.exec() == QDialog.Accepted
+    return le.text(), ok
+
+
+def run() -> int:
+    import sys
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("bac_count")
+    w = MainWindow()
+    w.show()
+    if len(sys.argv) > 1:
+        p = Path(sys.argv[1])
+        if p.is_dir():
+            files = sorted(x for x in p.iterdir() if x.suffix.lower() in IMG_EXTS)
+            w.load_paths(files)
+        elif p.exists():
+            w.load_paths([p])
+    return app.exec()

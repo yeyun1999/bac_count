@@ -1,0 +1,27 @@
+[project]
+name = "bac-count"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "yeyun", email = "1799103922@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.4",
+    "opencv-python-headless>=5.0.0.93",
+    "pyside6>=6.12.0",
+]
+
+[project.scripts]
+bac-count = "bac_count:main"
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+]
