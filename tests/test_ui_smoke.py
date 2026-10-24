@@ -162,6 +162,61 @@ def test_file_list_ops(qtbot):
     w.close()
 
 
+def test_per_image_params(qtbot):
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    assert len(files) >= 2
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    # 图0 调参 → 写入图0快照
+    w._on_param_changed("min_area", 99)
+    assert w.image_params[str(files[0])]["min_area"] == 99
+    # 切到未访问的图1 → 继承当前参数
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.file_list.setCurrentRow(1)
+    qtbot.wait(300)
+    assert w.params["min_area"] == 99
+    # 图1 改成别的值
+    w._on_param_changed("min_area", 7)
+    # 切回图0 → 恢复图0自己的参数，面板同步
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.file_list.setCurrentRow(0)
+    qtbot.wait(300)
+    assert w.params["min_area"] == 99
+    assert w.panel.get_values()["min_area"] == 99
+    w.close()
+
+
+def test_copy_params(qtbot):
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    assert len(files) >= 4
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    w._on_param_changed("min_area", 42)
+    # 复制到指定多张
+    w._copy_params_to(files[1:3])
+    assert w.image_params[str(files[1])]["min_area"] == 42
+    assert w.image_params[str(files[2])]["min_area"] == 42
+    assert str(files[3]) not in w.image_params  # 未访问未复制 → 不受影响
+    # 导航到目标图 → 用复制来的参数
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.file_list.setCurrentRow(1)
+    qtbot.wait(300)
+    assert w.params["min_area"] == 42
+    # 复制到全部其他
+    w._on_param_changed("min_area", 11)
+    w._copy_params_to_all()
+    for i, p in enumerate(files):
+        if i != 1:
+            assert w.image_params[str(p)]["min_area"] == 11, p.name
+    w.close()
+
+
 def test_extract_image_paths(tmp_path):
     from bac_count.ui.file_list import extract_image_paths
     from PySide6.QtCore import QUrl

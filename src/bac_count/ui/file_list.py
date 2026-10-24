@@ -26,6 +26,8 @@ class FileList(QListWidget):
     pathsDropped = Signal(list)      # list[Path]
     deleteRequested = Signal(list)   # list[Path]
     clearRequested = Signal()
+    copyParamsToSelected = Signal(list)  # 当前图参数 → 选中项 list[Path]
+    copyParamsToAll = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,4 +94,11 @@ class FileList(QListWidget):
         act_clear.triggered.connect(self.clearRequested.emit)
         menu.addAction(act_del)
         menu.addAction(act_clear)
+        menu.addSeparator()
+        act_cp_sel = QAction("复制当前图参数 → 选中项", menu)
+        act_cp_all = QAction("复制当前图参数 → 全部其他图", menu)
+        act_cp_sel.triggered.connect(lambda: self.copyParamsToSelected.emit(self.selectedPaths()))
+        act_cp_all.triggered.connect(self.copyParamsToAll.emit)
+        menu.addAction(act_cp_sel)
+        menu.addAction(act_cp_all)
         menu.exec(ev.globalPos())

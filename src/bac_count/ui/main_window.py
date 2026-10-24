@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
         self.resize(1440, 900)
 
         self.params: dict = default_params()
+        self.image_params: dict[str, dict] = {}  # 每张图独立的参数快照
         self.images: list[Path] = []
         self.idx: int = -1
         self.histories: dict[str, EditHistory] = {}
@@ -62,6 +63,8 @@ class MainWindow(QMainWindow):
         self.file_list.pathsDropped.connect(lambda ps: self.load_paths(ps, append=True))
         self.file_list.deleteRequested.connect(self._delete_paths)
         self.file_list.clearRequested.connect(self._clear_list)
+        self.file_list.copyParamsToSelected.connect(self._copy_params_to)
+        self.file_list.copyParamsToAll.connect(self._copy_params_to_all)
         self.file_list.currentItemChanged.connect(self._on_list_current_changed)
         self._list_syncing = False
         self._file_dock = QDockWidget("文件列表", self)
@@ -275,6 +278,13 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             QMessageBox.warning(self, "读取失败", str(e))
             return
+        # 每图独立参数：已存过程式 → 恢复；首次访问 → 继承上一张（即当前 params）
+        key = str(path)
+        if key in self.image_params:
+            self.params = dict(self.image_params[key])
+            self._rebuild_panel()
+        else:
+            self.image_params[key] = dict(self.params)
         h, w = self.bgr.shape[:2]
         self.scale = min(1.0, WORKING_MAX / max(h, w))
         if self.scale < 1.0:
@@ -380,13 +390,38 @@ class MainWindow(QMainWindow):
             name = next((k for k in DETECTORS if DETECTORS[k].display == display), None)
             if name:
                 self.params["algorithm"] = name
+            self._commit_params()
             self._rebuild_panel()
             self.request_detection()
             return
         self.params[key] = value
+        self._commit_params()
         if key == "manual_r":
             return  # 只影响手动添加，无需重检测
         self._debounce.start()
+
+    def _commit_params(self) -> None:
+        """把当前参数写回正在编辑的图片的快照。"""
+        if self.images and 0 <= self.idx < len(self.images):
+            self.image_params[str(self.images[self.idx])] = dict(self.params)
+
+    def _copy_params_to(self, paths: list[Path]) -> None:
+        if not (self.images and 0 <= self.idx < len(self.images)):
+            return
+        cur = str(self.images[self.idx])
+        targets = [str(p) for p in paths if str(p) != cur]
+        if not targets:
+            self.statusBar().showMessage("没有可复制的目标（选中项为空或都是当前图）", 3000)
+            return
+        snap = dict(self.params)
+        for t in targets:
+            self.image_params[t] = dict(snap)
+        self.statusBar().showMessage(f"已将当前参数复制到 {len(targets)} 张图片", 4000)
+
+    def _copy_params_to_all(self) -> None:
+        if not self.images:
+            return
+        self._copy_params_to([p for i, p in enumerate(self.images) if i != self.idx])
 
     def save_preset(self) -> None:
         name, ok = _text_dialog(self, "保存预设", "预设名称：", "my_preset")
@@ -405,11 +440,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "加载失败", str(e))
             return
         self.params.update(data)
+        self._commit_params()
         self._rebuild_panel()
         self.request_detection()
 
     def reset_params(self) -> None:
         self.params = default_params(self.params.get("algorithm", "adaptive"))
+        self._commit_params()
         self._rebuild_panel()
         self.request_detection()
 
