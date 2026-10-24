@@ -95,3 +95,4 @@ class ParamSpec:
     max: float | None = None
     step: float | None = None
     choices: list[str] | None = None
+    desc: str = ""  # 悬浮解释（tooltip）

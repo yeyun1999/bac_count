@@ -17,24 +17,39 @@ WORKING_MAX = 1200  # 调参/预览的工作分辨率上限（长边）
 
 PRE_SCHEMA: list[ParamSpec] = [
     ParamSpec("algorithm", "检测算法", "combo", "adaptive", group="算法",
-              choices=[]),  # choices 由 UI 填充
+              choices=[],  # choices 由 UI 填充
+              desc="阈值类适合对比明显的常规平板；Blob 快速稳健；HSV 适合有色菌落并天然排除黑字；"
+                   "Hough 适合大小一致的圆菌。"),
     ParamSpec("channel", "颜色通道", "combo", "gray", group="预处理",
-              choices=["gray", "red", "green", "blue", "hsv_h", "hsv_s", "hsv_v"]),
-    ParamSpec("blur_k", "高斯模糊核", "int", 3, group="预处理", min=0, max=15, step=2),
-    ParamSpec("clahe", "CLAHE 均衡", "bool", False, group="预处理"),
-    ParamSpec("clahe_clip", "CLAHE 强度", "float", 2.0, group="预处理", min=0.5, max=6.0, step=0.1),
-    ParamSpec("shading", "阴影校正核", "int", 0, group="预处理", min=0, max=151, step=10),
+              choices=["gray", "red", "green", "blue", "hsv_h", "hsv_s", "hsv_v"],
+              desc="用哪个通道做检测。挑菌落与培养基反差最大的通道，逐个切换在“预处理”视图对比。"),
+    ParamSpec("blur_k", "高斯模糊核", "int", 3, group="预处理", min=0, max=15, step=2,
+              desc="检测前平滑：调大压掉培养基颗粒噪声，但小菌落可能被抹掉；0=关闭。"),
+    ParamSpec("clahe", "CLAHE 均衡", "bool", False, group="预处理",
+              desc="限制对比度的局部直方图均衡，光照不均的平板可开；配合强度参数使用。"),
+    ParamSpec("clahe_clip", "CLAHE 强度", "float", 2.0, group="预处理", min=0.5, max=6.0, step=0.1,
+              desc="CLAHE 增强幅度。过大噪声被一起放大。"),
+    ParamSpec("shading", "阴影校正核", "int", 0, group="预处理", min=0, max=151, step=10,
+              desc="减去大核中值背景，消除渐变光斑/阴影；0=关闭，常用 51~101。核须大于菌落直径。"),
     ParamSpec("polarity", "菌落极性", "combo", "dark", group="预处理",
-              choices=["dark", "light"]),
-    ParamSpec("rim_pct", "皿缘内缩", "float", 0.12, group="预处理", min=0.0, max=0.3, step=0.01),
+              choices=["dark", "light"],
+              desc="dark=菌落比培养基暗（常规显色）；light=菌落比培养基亮（透明/荧光菌落）。"),
+    ParamSpec("rim_pct", "皿缘内缩", "float", 0.12, group="预处理", min=0.0, max=0.3, step=0.01,
+              desc="从皿缘向内收缩的检测禁区比例，皿缘暗环易出整圈假阳性→调大；贴边菌落被漏→调小。"
+                   "“预处理”视图的红圈即当前边界。"),
 ]
 
 POST_SCHEMA: list[ParamSpec] = [
-    ParamSpec("min_area", "最小面积(px²)", "int", 20, group="过滤", min=1, max=5000, step=1),
-    ParamSpec("max_area", "最大面积(px²)", "int", 800, group="过滤", min=10, max=50000, step=10),
-    ParamSpec("min_circ", "最小圆度", "float", 0.35, group="过滤", min=0.0, max=1.0, step=0.05),
-    ParamSpec("max_aspect", "最大长宽比", "float", 4.0, group="过滤", min=1.0, max=20.0, step=0.5),
-    ParamSpec("manual_r", "手动菌落半径(px)", "float", 6.0, group="手动校正", min=1.0, max=100.0, step=0.5),
+    ParamSpec("min_area", "最小面积(px²)", "int", 20, group="过滤", min=1, max=5000, step=1,
+              desc="面积小于此值的候选丢弃。调小可检出细小菌落，但噪点变多。"),
+    ParamSpec("max_area", "最大面积(px²)", "int", 800, group="过滤", min=10, max=50000, step=10,
+              desc="面积大于此值的候选丢弃。调小可排除马克笔字、粘连大团。"),
+    ParamSpec("min_circ", "最小圆度", "float", 0.35, group="过滤", min=0.0, max=1.0, step=0.05,
+              desc="圆度 4πA/P²，1=正圆。调大排除马克笔细长笔画；过小会把拉丝菌落当笔画滤掉。"),
+    ParamSpec("max_aspect", "最大长宽比", "float", 4.0, group="过滤", min=1.0, max=20.0, step=0.5,
+              desc="最小外接矩形的长宽比上限，过滤笔画状/拉丝状目标。"),
+    ParamSpec("manual_r", "手动菌落半径(px)", "float", 6.0, group="手动校正", min=1.0, max=100.0, step=0.5,
+              desc="“添加”模式点击空白处时新菌落的默认半径。"),
 ]
 
 

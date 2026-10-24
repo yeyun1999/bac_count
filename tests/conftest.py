@@ -33,3 +33,14 @@ def make_plate(seed: int = 42, size: int = 600, n_colonies: int = 40):
 @pytest.fixture
 def plate():
     return make_plate()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_qsettings(tmp_path):
+    """把 QSettings 重定向到临时目录，测试不读写用户真实配置。"""
+    from PySide6.QtCore import QSettings
+
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path))
+    QSettings.setPath(QSettings.IniFormat, QSettings.SystemScope, str(tmp_path))
+    yield

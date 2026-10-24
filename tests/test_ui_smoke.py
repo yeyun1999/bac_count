@@ -287,6 +287,40 @@ def test_copy_to_selected_disabled_when_only_current(qtbot, monkeypatch):
     w.close()
 
 
+def test_param_tooltips_and_default_collapse(qtbot):
+    w = MainWindow()
+    qtbot.addWidget(w)
+    # 每个参数都有悬浮解释，且已设到控件 tooltip
+    for spec in w._full_schema():
+        assert spec.desc, f"{spec.key} 缺少解释文案"
+    _, blur_w = w.panel._widgets["blur_k"]
+    assert blur_w.toolTip() == next(s for s in w._full_schema() if s.key == "blur_k").desc
+    # 默认折叠策略：预处理/过滤/手动校正收起，算法/算法参数展开
+    boxes = w.panel._boxes
+    assert boxes["预处理"]._collapsed and boxes["过滤"]._collapsed and boxes["手动校正"]._collapsed
+    assert not boxes["算法"]._collapsed and not boxes["算法参数"]._collapsed
+    w.close()
+
+
+def test_collapse_memory(qtbot):
+    from bac_count.core.models import ParamSpec
+    from bac_count.ui.param_panel import ParamPanel, _settings
+
+    specs = [ParamSpec("x1", "参数一", "int", 5, group="测试折叠组X", min=0, max=10, desc="d")]
+    p = ParamPanel()
+    p.set_schema(specs, {})
+    box = p._boxes["测试折叠组X"]
+    assert not box._collapsed  # 未知组默认展开
+    box.header.click()        # 用户折叠
+    assert box._collapsed and not box.content.isVisibleTo(p)
+    assert str(_settings().value("collapsed/测试折叠组X")).lower() == "true"
+    p2 = ParamPanel()
+    p2.set_schema(specs, {})
+    assert p2._boxes["测试折叠组X"]._collapsed  # 新面板恢复折叠状态
+    p2._boxes["测试折叠组X"].header.click()
+    assert p2._boxes["测试折叠组X"].content.isVisibleTo(p2)
+
+
 def test_export_batch(qtbot, monkeypatch, tmp_path):
     """批量导出：PNG→文件夹、CSV 一图一行、JSON 含路径/参数/菌落。"""
     import csv as _csv

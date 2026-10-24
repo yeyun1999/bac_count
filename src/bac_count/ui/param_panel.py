@@ -1,25 +1,35 @@
-"""参数面板：由 ParamSpec schema 自动生成控件。"""
+"""参数面板：schema 驱动控件生成；分组可折叠，折叠状态记忆；标签/控件带悬浮解释。"""
 from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from bac_count.core.models import ParamSpec
+
+# 首次使用时默认收起的分组（用户手动改过则以记忆为准）
+DEFAULT_COLLAPSED = {"预处理", "过滤", "手动校正"}
+
+_SETTINGS_ORG = "bac_count"
+
+
+def _settings() -> QSettings:
+    return QSettings(_SETTINGS_ORG, _SETTINGS_ORG)
 
 
 class _SliderRow(QWidget):
@@ -76,6 +86,51 @@ class _SliderRow(QWidget):
         self.blockSignals(False)
 
 
+class CollapsibleBox(QWidget):
+    """标题按钮（▾/▸）+ 可折叠内容区。"""
+
+    collapsedChanged = Signal(str, bool)  # group, collapsed
+
+    def __init__(self, group: str, collapsed: bool, parent=None):
+        super().__init__(parent)
+        self.group = group
+        self._collapsed = collapsed
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.header = QToolButton(self)
+        self.header.setCheckable(True)
+        self.header.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.header.setAutoRaise(True)
+        self.header.setStyleSheet(
+            "QToolButton{text-align:left; padding:5px 8px; font-weight:600; border:none;}"
+            "QToolButton:hover{background:rgba(128,128,128,40); border-radius:4px;}"
+        )
+        self._sync_header()
+        lay.addWidget(self.header)
+        self.content = QWidget(self)
+        self.form = QFormLayout(self.content)
+        self.form.setContentsMargins(8, 4, 8, 8)
+        self.form.setLabelAlignment(Qt.AlignLeft)
+        self.content.setVisible(not collapsed)
+        lay.addWidget(self.content)
+        self.header.toggled.connect(self._on_toggled)
+
+    def _sync_header(self) -> None:
+        self.header.setText(f"{'▸' if self._collapsed else '▾'}  {self.group}")
+        self.header.setChecked(self._collapsed)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self._collapsed = checked
+        self.content.setVisible(not checked)
+        self._sync_header()
+        self.collapsedChanged.emit(self.group, checked)
+
+    def add_row(self, label: QWidget, field: QWidget) -> None:
+        self.form.addRow(label, field)
+
+
 class ParamPanel(QScrollArea):
     valueChanged = Signal(str, object)  # key, value
 
@@ -85,10 +140,24 @@ class ParamPanel(QScrollArea):
         self._container = QWidget()
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(8, 8, 8, 8)
+        self._layout.setSpacing(4)
         self.setWidget(self._container)
         self._widgets: dict[str, tuple[ParamSpec, QWidget]] = {}
+        self._boxes: dict[str, CollapsibleBox] = {}
         self._loading = False
 
+    # ---------- 折叠状态持久化 ----------
+    @staticmethod
+    def _collapsed_for(group: str) -> bool:
+        v = _settings().value(f"collapsed/{group}", None)
+        if v is None:
+            return group in DEFAULT_COLLAPSED
+        return str(v).lower() in ("true", "1")
+
+    def _remember_collapse(self, group: str, collapsed: bool) -> None:
+        _settings().setValue(f"collapsed/{group}", collapsed)
+
+    # ---------- 构建 ----------
     def set_schema(self, specs: list[ParamSpec], values: dict[str, Any]) -> None:
         """重建控件；values 提供当前值（缺省用 spec.default）。"""
         self._loading = True
@@ -97,17 +166,21 @@ class ParamPanel(QScrollArea):
             if item.widget():
                 item.widget().deleteLater()
         self._widgets.clear()
-        groups: dict[str, QVBoxLayout] = {}
+        self._boxes.clear()
         for spec in specs:
-            if spec.group not in groups:
-                box = QGroupBox(spec.group)
-                gl = QFormLayout(box)
-                gl.setLabelAlignment(Qt.AlignLeft)
-                groups[spec.group] = gl
+            if spec.group not in self._boxes:
+                box = CollapsibleBox(spec.group, self._collapsed_for(spec.group))
+                box.collapsedChanged.connect(self._remember_collapse)
                 self._layout.addWidget(box)
+                self._boxes[spec.group] = box
             val = values.get(spec.key, spec.default)
             w = self._make_widget(spec, val)
-            groups[spec.group].addRow(QLabel(spec.label), w)
+            label = QLabel(spec.label)
+            if spec.desc:
+                tip = spec.desc
+                label.setToolTip(tip)
+                w.setToolTip(tip)
+            self._boxes[spec.group].add_row(label, w)
             self._widgets[spec.key] = (spec, w)
         self._layout.addStretch(1)
         self._loading = False
