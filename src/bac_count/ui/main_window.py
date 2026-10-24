@@ -65,8 +65,7 @@ class MainWindow(QMainWindow):
         self.file_list.clearRequested.connect(self._clear_list)
         self.file_list.copyParamsToSelected.connect(self._copy_params_to)
         self.file_list.copyParamsToAll.connect(self._copy_params_to_all)
-        self.file_list.currentItemChanged.connect(self._on_list_current_changed)
-        self._list_syncing = False
+        self.file_list.itemPicked.connect(self._on_list_pick)
         self._file_dock = QDockWidget("文件列表", self)
         self._file_dock.setObjectName("file_dock")
         self._file_dock.setWidget(self.file_list)
@@ -211,26 +210,25 @@ class MainWindow(QMainWindow):
             self.images += new
             if self.idx < 0 or self.bgr is None:
                 self.idx = len(self.images) - len(new)  # 当前无图 → 直接看新导入的第一张
+                self.file_list.set_paths(self.images)
                 self.load_current()
             else:
                 self._sync_list()
             return
         self.images = paths
         self.idx = 0
+        self.file_list.set_paths(self.images)
         self.load_current()
 
     def _toggle_file_list(self) -> None:
         self._file_dock.setVisible(not self._file_dock.isVisible())
 
     def _sync_list(self) -> None:
-        self._list_syncing = True
-        self.file_list.sync(self.images, self.idx)
-        self._list_syncing = False
+        """结构变化（增删图片）时重建列表；纯导航不走这里。"""
+        self.file_list.set_paths(self.images)
+        self.file_list.mark_current(self.idx)
 
-    def _on_list_current_changed(self, cur, _prev=None) -> None:
-        if self._list_syncing or cur is None:
-            return
-        row = self.file_list.row(cur)
+    def _on_list_pick(self, row: int) -> None:
         if 0 <= row < len(self.images) and row != self.idx:
             self.idx = row
             self.load_current()
@@ -244,10 +242,11 @@ class MainWindow(QMainWindow):
             self._reset_view()
             return
         self.idx = min(self.idx, len(self.images) - 1)
+        self.file_list.set_paths(self.images)  # 结构变化先重建，再决定导航/标记
         if old_current in paths:
             self.load_current()
         else:
-            self._sync_list()
+            self.file_list.mark_current(self.idx)
 
     def _clear_list(self) -> None:
         self._reset_view()
@@ -295,7 +294,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_image(bgra_to_qpixmap(wb, wa))
         self.last_auto = []
         self._lbl_image.setText(f"{self.idx + 1}/{len(self.images)}  {path.name}  ({w}×{h})")
-        self._sync_list()
+        self.file_list.mark_current(self.idx)  # 只移动 current，不重建、不销毁选区
         self._update_edit_actions()
         self.request_detection()
 

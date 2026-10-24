@@ -143,7 +143,7 @@ def test_file_list_ops(qtbot):
     assert len(w.images) == len(files)
     # 列表点击切换图片
     with qtbot.waitSignal(w.service.worker.done, timeout=20000):
-        w.file_list.setCurrentRow(1)
+        w.file_list.itemPicked.emit(1)
     qtbot.wait(300)
     assert w.idx == 1
     # 删除当前图片 → 自动切到下一张
@@ -162,6 +162,47 @@ def test_file_list_ops(qtbot):
     w.close()
 
 
+def test_multiselect_survives_navigation(qtbot):
+    """回归：Ctrl 加选 / Shift 扩选 / 右键选中项 都不应销毁选区或意外切图。"""
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    assert len(files) >= 3
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    fl = w.file_list
+    vp = fl.viewport()
+
+    def pos(r):
+        return fl.visualItemRect(fl.item(r)).center()
+
+    def sel_rows():
+        return {fl.row(i) for i in fl.selectedItems()}
+
+    # 无修饰单击 row1 → 切图
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        qtbot.mouseClick(vp, Qt.LeftButton, pos=pos(1))
+    qtbot.wait(200)
+    assert w.idx == 1
+    # Ctrl+单击 row2 → 加选，不切图
+    qtbot.mouseClick(vp, Qt.LeftButton, Qt.ControlModifier, pos(2))
+    qtbot.wait(100)
+    assert w.idx == 1, "Ctrl 加选不应切换图片"
+    assert sel_rows() == {1, 2}
+    # Shift+单击 row0 → 范围选 {0,1,2}，不切图
+    qtbot.mouseClick(vp, Qt.LeftButton, Qt.ShiftModifier, pos(0))
+    qtbot.wait(100)
+    assert w.idx == 1, "Shift 扩选不应切换图片"
+    assert sel_rows() == {0, 1, 2}
+    # 右键按在已选中项上 → 选区保留（只 press 不 release，避免弹菜单阻塞）
+    qtbot.mousePress(vp, Qt.RightButton, pos=pos(2))
+    qtbot.wait(100)
+    assert sel_rows() == {0, 1, 2}, "右键不应破坏多选"
+    assert w.idx == 1, "右键不应切换图片"
+    w.close()
+
+
 def test_per_image_params(qtbot):
     files = sorted(SAMPLE_DIR.glob("*.png"))
     assert len(files) >= 2
@@ -175,14 +216,14 @@ def test_per_image_params(qtbot):
     assert w.image_params[str(files[0])]["min_area"] == 99
     # 切到未访问的图1 → 继承当前参数
     with qtbot.waitSignal(w.service.worker.done, timeout=20000):
-        w.file_list.setCurrentRow(1)
+        w.file_list.itemPicked.emit(1)
     qtbot.wait(300)
     assert w.params["min_area"] == 99
     # 图1 改成别的值
     w._on_param_changed("min_area", 7)
     # 切回图0 → 恢复图0自己的参数，面板同步
     with qtbot.waitSignal(w.service.worker.done, timeout=20000):
-        w.file_list.setCurrentRow(0)
+        w.file_list.itemPicked.emit(0)
     qtbot.wait(300)
     assert w.params["min_area"] == 99
     assert w.panel.get_values()["min_area"] == 99
@@ -205,7 +246,7 @@ def test_copy_params(qtbot):
     assert str(files[3]) not in w.image_params  # 未访问未复制 → 不受影响
     # 导航到目标图 → 用复制来的参数
     with qtbot.waitSignal(w.service.worker.done, timeout=20000):
-        w.file_list.setCurrentRow(1)
+        w.file_list.itemPicked.emit(1)
     qtbot.wait(300)
     assert w.params["min_area"] == 42
     # 复制到全部其他
