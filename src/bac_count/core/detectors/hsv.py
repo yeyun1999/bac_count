@@ -17,19 +17,19 @@ class HsvSegment(Detector):
 
     def schema(self) -> list[ParamSpec]:
         return [
-            ParamSpec("h_lo", "H 下限", "int", 10, group="算法参数", min=0, max=179, step=1,
+            ParamSpec("h_lo", "H 下限", "int", 10, group="检测算法", min=0, max=179, step=1,
                       desc="色相范围下限（OpenCV 中 0~179）。褐色菌落通常在 10~40。"),
-            ParamSpec("h_hi", "H 上限", "int", 40, group="算法参数", min=0, max=179, step=1,
+            ParamSpec("h_hi", "H 上限", "int", 40, group="检测算法", min=0, max=179, step=1,
                       desc="色相范围上限。"),
-            ParamSpec("s_lo", "S 下限", "int", 62, group="算法参数", min=0, max=255, step=1,
+            ParamSpec("s_lo", "S 下限", "int", 62, group="检测算法", min=0, max=255, step=1,
                       desc="饱和度下限——排除浅色低饱和培养基和黑字的关键项。调高更严、漏浅色菌。"),
-            ParamSpec("s_hi", "S 上限", "int", 190, group="算法参数", min=0, max=255, step=1,
+            ParamSpec("s_hi", "S 上限", "int", 190, group="检测算法", min=0, max=255, step=1,
                       desc="饱和度上限，排除过饱和杂质。"),
-            ParamSpec("v_lo", "V 下限", "int", 85, group="算法参数", min=0, max=255, step=1,
+            ParamSpec("v_lo", "V 下限", "int", 85, group="检测算法", min=0, max=255, step=1,
                       desc="亮度下限：调高排除黑色马克笔（V 通常 <80）。"),
-            ParamSpec("v_hi", "V 上限", "int", 175, group="算法参数", min=0, max=255, step=1,
+            ParamSpec("v_hi", "V 上限", "int", 175, group="检测算法", min=0, max=255, step=1,
                       desc="亮度上限：调低排除发亮的培养基背景。"),
-            ParamSpec("morph_k", "形态学核", "int", 3, group="算法参数", min=0, max=9, step=2,
+            ParamSpec("morph_k", "形态学核", "int", 3, group="检测算法", min=0, max=9, step=2,
                       desc="先开运算去椒盐噪点、再闭运算补小孔。0=关闭；核大于菌落会直接抹掉菌落。"),
         ]
 

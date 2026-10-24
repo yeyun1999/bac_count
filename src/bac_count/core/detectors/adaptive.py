@@ -17,9 +17,9 @@ class AdaptiveThreshold(Detector):
 
     def schema(self) -> list[ParamSpec]:
         return [
-            ParamSpec("block", "块大小", "int", 31, group="算法参数", min=3, max=101, step=2,
+            ParamSpec("block", "块大小", "int", 31, group="检测算法", min=3, max=101, step=2,
                       desc="局部均值取样窗口（自动取奇数）。必须大于菌落直径，否则大菌落整体被当背景漏检。"),
-            ParamSpec("C", "常数 C", "float", 5.0, group="算法参数", min=-15.0, max=15.0, step=0.5,
+            ParamSpec("C", "常数 C", "float", 5.0, group="检测算法", min=-15.0, max=15.0, step=0.5,
                       desc="判定阈值 = 局部均值 − C。调大更严格（假阳性少、浅色菌落易漏）；调小反之。"),
         ]
 

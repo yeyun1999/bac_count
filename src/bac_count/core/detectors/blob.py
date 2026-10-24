@@ -17,13 +17,13 @@ class BlobDetector(Detector):
 
     def schema(self) -> list[ParamSpec]:
         return [
-            ParamSpec("min_thresh", "阈值下限", "int", 50, group="算法参数", min=0, max=255, step=5,
+            ParamSpec("min_thresh", "阈值下限", "int", 50, group="检测算法", min=0, max=255, step=5,
                       desc="二值化扫描起点。SimpleBlobDetector 在此区间逐级阈值找斑并合并稳定斑。"),
-            ParamSpec("max_thresh", "阈值上限", "int", 220, group="算法参数", min=0, max=255, step=5,
+            ParamSpec("max_thresh", "阈值上限", "int", 220, group="检测算法", min=0, max=255, step=5,
                       desc="扫描终点。菌落颜色浅时把上下限收窄到菌落实际灰度附近效果更好。"),
-            ParamSpec("min_circ_b", "圆度下限", "float", 0.3, group="算法参数", min=0.0, max=1.0, step=0.05,
+            ParamSpec("min_circ_b", "圆度下限", "float", 0.3, group="检测算法", min=0.0, max=1.0, step=0.05,
                       desc="斑的圆度过滤，1=正圆。调低可收不规则菌落，但笔画噪声变多。"),
-            ParamSpec("min_inertia", "惯性比下限", "float", 0.2, group="算法参数", min=0.0, max=1.0, step=0.05,
+            ParamSpec("min_inertia", "惯性比下限", "float", 0.2, group="检测算法", min=0.0, max=1.0, step=0.05,
                       desc="衡量“胖瘦”（1=圆，细长→0），过滤拉丝和笔画状目标。"),
         ]
 

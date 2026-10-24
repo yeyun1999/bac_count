@@ -17,9 +17,9 @@ class GlobalThreshold(Detector):
 
     def schema(self) -> list[ParamSpec]:
         return [
-            ParamSpec("use_otsu", "Otsu 自动阈值", "bool", True, group="算法参数",
+            ParamSpec("use_otsu", "Otsu 自动阈值", "bool", True, group="检测算法",
                       desc="自动挑选全局阈值（对双峰分布最有效）。低对比度菌落建议改用自适应阈值算法。"),
-            ParamSpec("thresh", "阈值", "int", 128, group="算法参数", min=1, max=254, step=1,
+            ParamSpec("thresh", "阈值", "int", 128, group="检测算法", min=1, max=254, step=1,
                       desc="比该值暗的像素算菌落（极性统一后菌落恒为暗色）。关 Otsu 时生效，"
                            "在“预处理”视图看菌落/背景灰度再定。"),
         ]

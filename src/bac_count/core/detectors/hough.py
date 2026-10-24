@@ -18,13 +18,13 @@ class HoughCircles(Detector):
 
     def schema(self) -> list[ParamSpec]:
         return [
-            ParamSpec("h_param1", "Canny 高阈值", "int", 100, group="算法参数", min=20, max=300, step=5,
+            ParamSpec("h_param1", "Canny 高阈值", "int", 100, group="检测算法", min=20, max=300, step=5,
                       desc="边缘检测强度：调大只剩清晰边缘（漏检多、假阳性少）。"),
-            ParamSpec("h_param2", "累加器阈值", "int", 16, group="算法参数", min=5, max=100, step=1,
+            ParamSpec("h_param2", "累加器阈值", "int", 16, group="检测算法", min=5, max=100, step=1,
                       desc="圆投票门槛：调小检出更多圆但假阳性上升。"),
-            ParamSpec("min_r", "最小半径", "int", 3, group="算法参数", min=1, max=100, step=1,
+            ParamSpec("min_r", "最小半径", "int", 3, group="检测算法", min=1, max=100, step=1,
                       desc="按“预处理”视图量一个典型菌落的像素半径来设区间。"),
-            ParamSpec("max_r", "最大半径", "int", 20, group="算法参数", min=2, max=200, step=1,
+            ParamSpec("max_r", "最大半径", "int", 20, group="检测算法", min=2, max=200, step=1,
                       desc="半径上限过大时，手写字的弧形笔画常被误判成大圆。"),
         ]
 

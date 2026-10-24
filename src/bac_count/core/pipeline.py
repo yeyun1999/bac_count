@@ -16,11 +16,11 @@ __all__ = ["PRE_SCHEMA", "POST_SCHEMA", "run_detection", "contours_to_colonies",
 
 WORKING_MAX = 1200  # 调参/预览的工作分辨率上限（长边）
 
+# 面板分组顺序 = 检测执行顺序：皿ROI → 预处理 → 算法(+算法参数) → 拆分 → 过滤 → 手动
 PRE_SCHEMA: list[ParamSpec] = [
-    ParamSpec("algorithm", "检测算法", "combo", "adaptive", group="算法",
-              choices=[],  # choices 由 UI 填充
-              desc="阈值类适合对比明显的常规平板；Blob 快速稳健；HSV 适合有色菌落并天然排除黑字；"
-                   "Hough 适合大小一致的圆菌。"),
+    ParamSpec("rim_pct", "皿缘内缩", "float", 0.12, group="皿 ROI", min=0.0, max=0.3, step=0.01,
+              desc="从皿缘向内收缩的检测禁区比例，皿缘暗环易出整圈假阳性→调大；贴边菌落被漏→调小。"
+                   "“预处理”视图的红圈即当前边界。"),
     ParamSpec("channel", "颜色通道", "combo", "gray", group="预处理",
               choices=["gray", "red", "green", "blue", "hsv_h", "hsv_s", "hsv_v"],
               desc="用哪个通道做检测。挑菌落与培养基反差最大的通道，逐个切换在“预处理”视图对比。"),
@@ -35,29 +35,30 @@ PRE_SCHEMA: list[ParamSpec] = [
     ParamSpec("polarity", "菌落极性", "combo", "dark", group="预处理",
               choices=["dark", "light"],
               desc="dark=菌落比培养基暗（常规显色）；light=菌落比培养基亮（透明/荧光菌落）。"),
-    ParamSpec("rim_pct", "皿缘内缩", "float", 0.12, group="预处理", min=0.0, max=0.3, step=0.01,
-              desc="从皿缘向内收缩的检测禁区比例，皿缘暗环易出整圈假阳性→调大；贴边菌落被漏→调小。"
-                   "“预处理”视图的红圈即当前边界。"),
+    ParamSpec("algorithm", "算法选择", "combo", "adaptive", group="检测算法",
+              choices=[],  # choices 由 UI 填充
+              desc="阈值类适合对比明显的常规平板；Blob 快速稳健；HSV 适合有色菌落并天然排除黑字；"
+                   "Hough 适合大小一致的圆菌。"),
 ]
 
 POST_SCHEMA: list[ParamSpec] = [
-    ParamSpec("min_area", "最小面积(px²)", "int", 20, group="过滤", min=1, max=5000, step=1,
-              desc="面积小于此值的候选丢弃。调小可检出细小菌落，但噪点变多。"),
-    ParamSpec("max_area", "最大面积(px²)", "int", 800, group="过滤", min=10, max=50000, step=10,
-              desc="面积大于此值的候选丢弃。调小可排除马克笔字、粘连大团。"),
-    ParamSpec("min_circ", "最小圆度", "float", 0.35, group="过滤", min=0.0, max=1.0, step=0.05,
-              desc="圆度 4πA/P²，1=正圆。调大排除马克笔细长笔画；过小会把拉丝菌落当笔画滤掉。"),
-    ParamSpec("max_aspect", "最大长宽比", "float", 4.0, group="过滤", min=1.0, max=20.0, step=0.5,
-              desc="最小外接矩形的长宽比上限，过滤笔画状/拉丝状目标。"),
-    ParamSpec("split_on", "拆分粘连菌落", "bool", False, group="过滤",
+    ParamSpec("split_on", "拆分粘连菌落", "bool", False, group="粘连拆分",
               desc="对面积远超典型菌落的大团做距离变换+分水岭拆分（阈值/自适应/HSV 效果好；"
                    "Blob/Hough 本身按圆找，收益小）。拆出的碎片仍受面积/圆度过滤。"),
-    ParamSpec("split_factor", "合并判定倍数", "float", 1.6, group="过滤", min=1.2, max=4.0, step=0.1,
+    ParamSpec("split_factor", "合并判定倍数", "float", 1.6, group="粘连拆分", min=1.2, max=4.0, step=0.1,
               desc="候选面积 > 全体中位面积×此倍数才尝试拆分。粘连漏拆→调小；"
                    "菌落大小本来就不均导致误拆→调大。"),
-    ParamSpec("split_peak", "分水岭峰值比", "float", 0.55, group="过滤", min=0.3, max=0.85, step=0.05,
+    ParamSpec("split_peak", "分水岭峰值比", "float", 0.55, group="粘连拆分", min=0.3, max=0.85, step=0.05,
               desc="距离变换找双核的搜索起点（自动向上搜索至 0.9）。调小更激进，可能把单个"
                    "不规则菌落拆成两半；误拆→调大。"),
+    ParamSpec("min_area", "最小面积(px²)", "int", 20, group="后处理过滤", min=1, max=5000, step=1,
+              desc="面积小于此值的候选丢弃（含拆分出的碎片）。调小可检出细小菌落，但噪点变多。"),
+    ParamSpec("max_area", "最大面积(px²)", "int", 800, group="后处理过滤", min=10, max=50000, step=10,
+              desc="面积大于此值的候选丢弃。调小可排除马克笔字；拆分在过滤前执行，大团先拆再判。"),
+    ParamSpec("min_circ", "最小圆度", "float", 0.35, group="后处理过滤", min=0.0, max=1.0, step=0.05,
+              desc="圆度 4πA/P²，1=正圆。调大排除马克笔细长笔画；过小会把拉丝菌落当笔画滤掉。"),
+    ParamSpec("max_aspect", "最大长宽比", "float", 4.0, group="后处理过滤", min=1.0, max=20.0, step=0.5,
+              desc="最小外接矩形的长宽比上限，过滤笔画状/拉丝状目标。"),
     ParamSpec("manual_r", "手动菌落半径(px)", "float", 6.0, group="手动校正", min=1.0, max=100.0, step=0.5,
               desc="“添加”模式点击空白处时新菌落的默认半径。"),
 ]

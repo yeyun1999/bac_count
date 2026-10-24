@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from bac_count.core.models import ParamSpec
 
 # 首次使用时默认收起的分组（用户手动改过则以记忆为准）
-DEFAULT_COLLAPSED = {"预处理", "过滤", "手动校正"}
+DEFAULT_COLLAPSED = {"预处理", "后处理过滤", "手动校正"}
 
 _SETTINGS_ORG = "bac_count"
 
