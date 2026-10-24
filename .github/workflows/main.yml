@@ -20,11 +20,10 @@ jobs:
           enable-cache: true
         
       - name: Install python
-        run: uv sync --frozen
+        run: uv sync --frozen; uv pip install nuitka[all]
           
       - name: Nuitka build
         run: 
-          uv add --dev nuitka
           uv run python -m nuitka src/bac_count `
           --mode=onefile `
           --output-dir=build `
