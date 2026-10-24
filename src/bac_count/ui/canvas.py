@@ -7,16 +7,20 @@ import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QFrame,
     QGraphicsEllipseItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QHBoxLayout,
+    QToolButton,
 )
 
 from bac_count.core.models import Colony
 
 MODE_BROWSE, MODE_ADD, MODE_REMOVE = "browse", "add", "remove"
+VIEW_ORIG, VIEW_PREP, VIEW_MARK = "orig", "prep", "mark"
 
 PEN_AUTO = QColor(0, 230, 0)
 PEN_MANUAL = QColor(0, 160, 255)
@@ -54,24 +58,82 @@ class Canvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setBackgroundBrush(QColor(38, 40, 44))
         self._pix = self._scene.addPixmap(bgra_to_qpixmap(np.zeros((10, 10, 3), np.uint8), None))
+        self._prep_pix = self._scene.addPixmap(QPixmap())
+        self._prep_pix.setZValue(5)
+        self._prep_pix.hide()
         self._overlay: list = []
         self._colonies: list[Colony] = []
         self._scale = 1.0  # 场景(工作图) = 原图 * scale
         self._mode = MODE_BROWSE
+        self._view_mode = VIEW_MARK
         self._hover: Colony | None = None
         self._panning = False
         self._pan_start = QPoint()
         self._space_pan = False   # 空格临时平移
         self._ctrl_held = False   # Ctrl 临时反转 添加/删除
+        self._build_view_bar()
+
+    # ---------- 左上角视图切换条 ----------
+    def _build_view_bar(self) -> None:
+        bar = QFrame(self)
+        bar.setObjectName("viewBar")
+        bar.setStyleSheet(
+            "#viewBar{background:rgba(40,42,46,200); border-radius:6px;}"
+            "QToolButton{color:#ddd; background:transparent; border:none; padding:4px 10px; border-radius:4px;}"
+            "QToolButton:checked{background:#3d6b99; color:white;}"
+            "QToolButton:hover{background:rgba(255,255,255,40);}"
+        )
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(2)
+        self._view_btns: dict[str, QToolButton] = {}
+        for label, mode in (("原图", VIEW_ORIG), ("预处理", VIEW_PREP), ("标记", VIEW_MARK)):
+            b = QToolButton(bar)
+            b.setText(label)
+            b.setCheckable(True)
+            b.setChecked(mode == self._view_mode)
+            b.clicked.connect(lambda _=False, m=mode: self.set_view_mode(m))
+            lay.addWidget(b)
+            self._view_btns[mode] = b
+        bar.adjustSize()
+        bar.move(6, 6)
+        bar.raise_()
+        self._view_bar = bar
 
     # ---------- 图像与标注 ----------
     def set_image(self, pixmap) -> None:
         self._pix.setPixmap(pixmap)
         self._scene.setSceneRect(0, 0, pixmap.width(), pixmap.height())
         self.fit_view()
+        self._apply_view()
+
+    def set_prep_image(self, pixmap) -> None:
+        """检测线程回传的预处理图（工作尺度）；None 表示清除。"""
+        if pixmap is None:
+            self._prep_pix.setPixmap(QPixmap())
+        else:
+            self._prep_pix.setPixmap(pixmap)
+        self._apply_view()
+
+    def set_view_mode(self, mode: str) -> None:
+        self._view_mode = mode
+        for m, b in self._view_btns.items():
+            b.blockSignals(True)
+            b.setChecked(m == mode)
+            b.blockSignals(False)
+        self._apply_view()
+
+    def _apply_view(self) -> None:
+        has_prep = not self._prep_pix.pixmap().isNull()
+        prep_on = self._view_mode == VIEW_PREP and has_prep
+        self._prep_pix.setVisible(prep_on)
+        self._pix.setVisible(self._view_mode != VIEW_PREP or not has_prep)
+        for item in self._overlay:
+            item.setVisible(self._view_mode == VIEW_MARK)
 
     def clear_image(self) -> None:
         self.set_image(bgra_to_qpixmap(np.zeros((10, 10, 3), np.uint8), None))
+        self.set_prep_image(None)
 
     def set_colonies(self, colonies: Sequence[Colony], scale: float) -> None:
         """colonies 为原图坐标；scale 换算到场景。"""
@@ -93,6 +155,7 @@ class Canvas(QGraphicsView):
             el = QGraphicsEllipseItem(QRectF(c.x * s - r, c.y * s - r, 2 * r, 2 * r))
             el.setPen(pen)
             el.setZValue(10)
+            el.setVisible(self._view_mode == VIEW_MARK)
             self._scene.addItem(el)
             self._overlay.append(el)
             txt = QGraphicsSimpleTextItem(str(c.id))
@@ -100,6 +163,7 @@ class Canvas(QGraphicsView):
             txt.setBrush(pen.color())
             txt.setPos(c.x * s + r + 1, c.y * s - r - 1)
             txt.setZValue(11)
+            txt.setVisible(self._view_mode == VIEW_MARK)
             self._scene.addItem(txt)
             self._overlay.append(txt)
 
@@ -144,6 +208,11 @@ class Canvas(QGraphicsView):
 
     def zoom(self, factor: float) -> None:
         self.scale(factor, factor)
+
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        self._view_bar.move(6, 6)
+        self._view_bar.raise_()
 
     # ---------- 交互 ----------
     def keyPressEvent(self, ev) -> None:

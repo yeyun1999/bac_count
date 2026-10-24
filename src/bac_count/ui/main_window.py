@@ -292,6 +292,7 @@ class MainWindow(QMainWindow):
         else:
             wb, wa = self.bgr, self.alpha
         self.canvas.set_image(bgra_to_qpixmap(wb, wa))
+        self.canvas.set_prep_image(None)  # 切图先清预处理图，避免短暂显示上一张
         self.last_auto = []
         self._lbl_image.setText(f"{self.idx + 1}/{len(self.images)}  {path.name}  ({w}×{h})")
         self.file_list.mark_current(self.idx)  # 只移动 current，不重建、不销毁选区
@@ -310,10 +311,12 @@ class MainWindow(QMainWindow):
         self._seq += 1
         self.service.worker.submit.emit(self._seq, self.bgr, self.alpha, dict(self.params))
 
-    def _on_detection_done(self, seq: int, colonies: list) -> None:
+    def _on_detection_done(self, seq: int, colonies: list, prep=None) -> None:
         if seq < self._seq:
             return  # 过期结果
         self.last_auto = colonies
+        if prep is not None:
+            self.canvas.set_prep_image(bgra_to_qpixmap(prep, None))
         self._busy = False
         self._refresh_merge()
         if self._pending:

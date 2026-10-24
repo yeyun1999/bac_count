@@ -287,6 +287,31 @@ def test_copy_to_selected_disabled_when_only_current(qtbot, monkeypatch):
     w.close()
 
 
+def test_view_modes(qtbot):
+    from bac_count.ui.canvas import VIEW_MARK, VIEW_ORIG, VIEW_PREP
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(600)
+    c = w.canvas
+    assert not c._prep_pix.pixmap().isNull(), "检测后应有预处理图"
+    assert c._view_mode == VIEW_MARK
+    assert c._pix.isVisible() and not c._prep_pix.isVisible()
+    assert c._overlay and all(it.isVisible() for it in c._overlay)
+    c.set_view_mode(VIEW_ORIG)
+    assert c._pix.isVisible() and not c._prep_pix.isVisible()
+    assert all(not it.isVisible() for it in c._overlay)
+    c.set_view_mode(VIEW_PREP)
+    assert c._prep_pix.isVisible() and not c._pix.isVisible()
+    c.set_view_mode(VIEW_MARK)
+    assert c._pix.isVisible() and not c._prep_pix.isVisible()
+    assert c._view_btns[VIEW_MARK].isChecked()
+    w.close()
+
+
 def test_per_image_params(qtbot):
     files = sorted(SAMPLE_DIR.glob("*.png"))
     assert len(files) >= 2
