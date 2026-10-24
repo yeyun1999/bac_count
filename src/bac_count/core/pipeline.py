@@ -10,6 +10,7 @@ import numpy as np
 from bac_count.core.models import Colony, ParamSpec
 from bac_count.core.preprocess import make_dish_mask, prepare
 from bac_count.core.registry import PrepContext, get_detector
+from bac_count.core.split import split_merged
 
 __all__ = ["PRE_SCHEMA", "POST_SCHEMA", "run_detection", "contours_to_colonies", "default_params"]
 
@@ -48,6 +49,15 @@ POST_SCHEMA: list[ParamSpec] = [
               desc="圆度 4πA/P²，1=正圆。调大排除马克笔细长笔画；过小会把拉丝菌落当笔画滤掉。"),
     ParamSpec("max_aspect", "最大长宽比", "float", 4.0, group="过滤", min=1.0, max=20.0, step=0.5,
               desc="最小外接矩形的长宽比上限，过滤笔画状/拉丝状目标。"),
+    ParamSpec("split_on", "拆分粘连菌落", "bool", False, group="过滤",
+              desc="对面积远超典型菌落的大团做距离变换+分水岭拆分（阈值/自适应/HSV 效果好；"
+                   "Blob/Hough 本身按圆找，收益小）。拆出的碎片仍受面积/圆度过滤。"),
+    ParamSpec("split_factor", "合并判定倍数", "float", 1.6, group="过滤", min=1.2, max=4.0, step=0.1,
+              desc="候选面积 > 全体中位面积×此倍数才尝试拆分。粘连漏拆→调小；"
+                   "菌落大小本来就不均导致误拆→调大。"),
+    ParamSpec("split_peak", "分水岭峰值比", "float", 0.55, group="过滤", min=0.3, max=0.85, step=0.05,
+              desc="距离变换找双核的搜索起点（自动向上搜索至 0.9）。调小更激进，可能把单个"
+                   "不规则菌落拆成两半；误拆→调大。"),
     ParamSpec("manual_r", "手动菌落半径(px)", "float", 6.0, group="手动校正", min=1.0, max=100.0, step=0.5,
               desc="“添加”模式点击空白处时新菌落的默认半径。"),
 ]
@@ -123,6 +133,7 @@ def run_detection(
 
     det = get_detector(params.get("algorithm", "adaptive"))
     raw = det.detect(ctx, params)
+    raw = split_merged(ctx, raw, params)  # ① 粘连拆分（split_on 关闭时原样返回）
 
     # 面积参数按原图 px² 定义 → 换算到工作尺度
     p = dict(params)

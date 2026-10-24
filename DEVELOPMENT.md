@@ -38,6 +38,7 @@ src/bac_count/
 │   ├── registry.py (46)           # Detector ABC + @register 注册表 + PrepContext
 │   ├── detectors/{threshold,adaptive,blob,hough,hsv}.py   # 5 个算法，一文件一个
 │   ├── edits.py (75)              # EditHistory：增删/undo/redo（纯逻辑）
+│   ├── split.py (~120)            # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
 │   ├── main_window.py (591)       # 组装一切：状态机、调度、编辑、导出、预设
@@ -106,6 +107,15 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 - 优先 alpha 通道（样例图皿外透明）→ 最大轮廓 minEnclosingCircle → 半径 ×(1−rim_pct)。
 - 无 alpha 时 HoughCircles 找大圆兜底；再失败返回 None（全图可检测）。
 - 后处理要求菌落中心落在 mask 内。
+
+### 5.6 粘连拆分（split.py，默认关，pipeline 在检测后/过滤前调用）
+- 触发（工作坐标）：`area ≥ 中位面积×split_factor`，**或** `area ≥ 1.25×中位 且 外接圆填充率<0.88`
+  （花生形兜底——重叠越狠并集面积反而越小，只靠面积倍数会漏半重叠对）。
+- 通用二值图由 adaptiveThreshold 生成（复用面板上的 block/C），与所选算法无关 → 5 种算法统一受益。
+- 距离变换找峰：从 split_peak 向上搜到 0.9，第一个分出 ≥2 稳定核（≥2px）的阈值做 watershed marker；
+  子区域面积 ≥15% 才保留，碎片再过 min_area/min_circ 过滤。
+- **物理极限**：中心距 < 半径（重叠 >50%）时鞍部/峰值比 >0.9 拆不动——预期行为，靠手动。
+- 样例基线：E0-3 开拆分 51→55（+4 均为真粘连对）。
 
 ## 6. 样例数据与算法基线
 
@@ -214,7 +224,7 @@ class Mine(Detector):
 ## 10. 已知局限 / 建议方向（未做，见 COLONY_GUI_TODO）
 
 - E12 类低对比度大菌落：adaptive 漏 ~2/7。候选：默认开 shading 校正或 CLAHE。
-- 粘连/蔓延菌落不分割：预留 watershed / DL（`registry` 即扩展点）。
+- 粘连拆分已做（§5.6），但重叠 >50% 的极端粘连仍是盲区：候选方向 DL 分割（`registry` 即扩展点）。
 - 排除区（手动删除的圆）在画布上不可见，误删难察觉——值得先做。
 - 批量无交互处理、CFU=计数×稀释倍数、多语言：均 P2 未动。
 - 检测在工作分辨率(≤1200px)跑，导出时 `_result_for_path` 也是同样缩放——
