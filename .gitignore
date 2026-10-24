@@ -1,0 +1,12 @@
+# session-local notes
+*_TODO.md
+
+# python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# outputs
+exports/
+*.tmp
