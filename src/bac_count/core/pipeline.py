@@ -34,6 +34,7 @@ POST_SCHEMA: list[ParamSpec] = [
     ParamSpec("max_area", "最大面积(px²)", "int", 800, group="过滤", min=10, max=50000, step=10),
     ParamSpec("min_circ", "最小圆度", "float", 0.35, group="过滤", min=0.0, max=1.0, step=0.05),
     ParamSpec("max_aspect", "最大长宽比", "float", 4.0, group="过滤", min=1.0, max=20.0, step=0.5),
+    ParamSpec("manual_r", "手动菌落半径(px)", "float", 6.0, group="手动校正", min=1.0, max=100.0, step=0.5),
 ]
 
 

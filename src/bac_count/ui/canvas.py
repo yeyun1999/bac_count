@@ -121,7 +121,7 @@ class Canvas(QGraphicsView):
         if self._mode == MODE_BROWSE:
             self.setDragMode(QGraphicsView.ScrollHandDrag)
             self.viewport().setCursor(Qt.ClosedHandCursor if self._space_pan else Qt.OpenHandCursor)
-            self.modeHintChanged.emit("浏览模式：拖拽平移（空格=临时平移，中键=平移）")
+            self.modeHintChanged.emit("浏览模式：拖拽平移 · 滚轮缩放 · 0 适应窗口（空格=临时平移）")
             return
         if self._space_pan:
             self.setDragMode(QGraphicsView.ScrollHandDrag)

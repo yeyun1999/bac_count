@@ -9,12 +9,13 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
-    QDoubleSpinBox,
     QFileDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QToolBar,
+    QToolButton,
 )
 
 from bac_count.core.edits import EditHistory
@@ -97,68 +98,73 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         tb = QToolBar("主工具栏")
         tb.setMovable(False)
+        tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.addToolBar(tb)
 
-        def act(text, slot, shortcut=None, checkable=False, group=None) -> QAction:
+        def act(text, slot, shortcut=None, checkable=False, group=None, button=True, tip=None) -> QAction:
             a = QAction(text, self)
             if callable(slot):
                 a.triggered.connect(slot)
             if shortcut:
                 a.setShortcut(QKeySequence(shortcut))
+            if tip:
+                a.setToolTip(tip)
             a.setCheckable(checkable)
             if group is not None:
                 group.addAction(a)
-            tb.addAction(a)
+            if button:
+                tb.addAction(a)
+            else:
+                self.addAction(a)  # 不占工具栏，仅保留快捷键
             return a
 
-        act("打开图片", self.open_files)
-        act("打开文件夹", self.open_folder)
+        def menu_btn(text, items):
+            a = QAction(text, self)
+            m = QMenu(text, self)
+            for label, slot in items:
+                m.addAction(label, slot)
+            a.setMenu(m)
+            tb.addAction(a)
+            btn = tb.widgetForAction(a)
+            if btn is not None:
+                btn.setPopupMode(QToolButton.InstantPopup)
+            return a
+
+        menu_btn("📂 打开", [("打开图片…", self.open_files), ("打开文件夹…", self.open_folder)])
         tb.addSeparator()
-        self._a_filelist = act("文件列表", self._toggle_file_list, "Ctrl+E", True)
+        act("◀", lambda: self._navigate(-1), "Alt+Left", tip="上一张 (Alt+←)")
+        act("▶", lambda: self._navigate(1), "Alt+Right", tip="下一张 (Alt+→)")
+        tb.addSeparator()
+        self._a_filelist = act("🗂", self._toggle_file_list, "Ctrl+E", True, tip="文件列表 (Ctrl+E)")
         self._a_filelist.setChecked(True)
         self._file_dock.visibilityChanged.connect(lambda v: self._a_filelist.setChecked(v))
-        tb.addSeparator()
-        act("◀ 上一张", lambda: self._navigate(-1), "Alt+Left")
-        act("下一张 ▶", lambda: self._navigate(1), "Alt+Right")
         tb.addSeparator()
 
         mode_group = QActionGroup(self)
         mode_group.setExclusive(True)
-        self._a_browse = act("浏览", lambda: self._set_mode(MODE_BROWSE), "1", True, mode_group)
-        self._a_add = act("添加", lambda: self._set_mode(MODE_ADD), "2", True, mode_group)
-        self._a_remove = act("删除", lambda: self._set_mode(MODE_REMOVE), "3", True, mode_group)
+        self._a_browse = act("浏览", lambda: self._set_mode(MODE_BROWSE), "1", True, mode_group, tip="浏览模式 (1)")
+        self._a_add = act("添加", lambda: self._set_mode(MODE_ADD), "2", True, mode_group, tip="添加菌落 (2)｜按住 Ctrl 临时删除")
+        self._a_remove = act("删除", lambda: self._set_mode(MODE_REMOVE), "3", True, mode_group, tip="删除菌落 (3)｜按住 Ctrl 临时添加")
         self._a_browse.setChecked(True)
         tb.addSeparator()
 
-        lbl = QLabel(" 手动半径 ")
-        tb.addWidget(lbl)
-        self.spin_radius = QDoubleSpinBox()
-        self.spin_radius.setRange(1.0, 100.0)
-        self.spin_radius.setValue(6.0)
-        self.spin_radius.setSuffix(" px")
-        tb.addWidget(self.spin_radius)
-        tb.addSeparator()
-
-        self._a_undo = act("撤销", self._undo, "Ctrl+Z")
-        self._a_redo = act("重做", self._redo, "Ctrl+Y")
+        self._a_undo = act("↶", self._undo, "Ctrl+Z", tip="撤销 (Ctrl+Z)")
+        self._a_redo = act("↷", self._redo, "Ctrl+Y", tip="重做 (Ctrl+Y)")
         self._a_undo.setEnabled(False)
         self._a_redo.setEnabled(False)
-        act("清除编辑", self._clear_edits)
         tb.addSeparator()
-        act("放大", lambda: self.canvas.zoom(1.25), QKeySequence.ZoomIn)
-        act("缩小", lambda: self.canvas.zoom(1 / 1.25), QKeySequence.ZoomOut)
-        act("适应窗口", self.canvas.fit_view, "0")
-        tb.addSeparator()
-        act("导出 PNG", self.export_png)
-        act("导出 CSV", self.export_csv)
-        act("导出 JSON", self.export_json)
-        tb.addSeparator()
-        act("保存预设", self.save_preset)
-        act("加载预设", self.load_preset)
-        act("恢复默认", self.reset_params)
+
+        menu_btn("📤 导出", [("标注图 PNG", self.export_png), ("菌落明细 CSV", self.export_csv),
+                             ("完整状态 JSON", self.export_json)])
+        menu_btn("⚙ 预设", [("保存预设", self.save_preset), ("加载预设", self.load_preset),
+                             ("恢复默认参数", self.reset_params), ("清除当前图编辑", self._clear_edits)])
+
+        # 缩放快捷键保留（滚轮/0 已覆盖，不再占按钮）
+        act("放大", lambda: self.canvas.zoom(1.25), QKeySequence.ZoomIn, button=False)
+        act("缩小", lambda: self.canvas.zoom(1 / 1.25), QKeySequence.ZoomOut, button=False)
+        act("适应窗口", self.canvas.fit_view, "0", button=False)
 
         # 工具栏按钮不抢焦点，保证空格/Ctrl 直达画布
-        from PySide6.QtWidgets import QToolButton
         for btn in tb.findChildren(QToolButton):
             btn.setFocusPolicy(Qt.NoFocus)
 
@@ -324,7 +330,7 @@ class MainWindow(QMainWindow):
 
     def _on_add_click(self, sx: float, sy: float) -> None:
         x, y = sx / self.scale, sy / self.scale
-        self._history().add_colony(x, y, float(self.spin_radius.value()))
+        self._history().add_colony(x, y, float(self.params.get("manual_r", 6.0)))
         self._refresh_merge()
 
     def _on_remove_click(self, colony: Colony) -> None:
@@ -378,6 +384,8 @@ class MainWindow(QMainWindow):
             self.request_detection()
             return
         self.params[key] = value
+        if key == "manual_r":
+            return  # 只影响手动添加，无需重检测
         self._debounce.start()
 
     def save_preset(self) -> None:
