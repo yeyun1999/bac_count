@@ -36,7 +36,7 @@ DEBOUNCE_MS = 150
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
         self.setWindowTitle("平板菌落计数")
         self.resize(1440, 900)
@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         self._file_dock.setMinimumWidth(200)
         self.resizeDocks([self._file_dock], [230], Qt.Horizontal)
 
-        self.panel = ParamPanel(self)
+        self.panel = ParamPanel(self, settings=settings)
         self.panel.valueChanged.connect(self._on_param_changed)
         dock = QDockWidget("检测参数", self)
         dock.setObjectName("param_dock")

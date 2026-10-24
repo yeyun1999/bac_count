@@ -287,8 +287,10 @@ def test_copy_to_selected_disabled_when_only_current(qtbot, monkeypatch):
     w.close()
 
 
-def test_param_tooltips_and_default_collapse(qtbot):
-    w = MainWindow()
+def test_param_tooltips_and_default_collapse(qtbot, tmp_path):
+    from PySide6.QtCore import QSettings
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
     qtbot.addWidget(w)
     # 每个参数都有悬浮解释，且已设到控件 tooltip
     for spec in w._full_schema():
@@ -302,19 +304,22 @@ def test_param_tooltips_and_default_collapse(qtbot):
     w.close()
 
 
-def test_collapse_memory(qtbot):
-    from bac_count.core.models import ParamSpec
-    from bac_count.ui.param_panel import ParamPanel, _settings
+def test_collapse_memory(qtbot, tmp_path):
+    from PySide6.QtCore import QSettings
 
+    from bac_count.core.models import ParamSpec
+    from bac_count.ui.param_panel import ParamPanel
+
+    settings = QSettings(str(tmp_path / "mem.conf"), QSettings.Format.IniFormat)
     specs = [ParamSpec("x1", "参数一", "int", 5, group="测试折叠组X", min=0, max=10, desc="d")]
-    p = ParamPanel()
+    p = ParamPanel(settings=settings)
     p.set_schema(specs, {})
     box = p._boxes["测试折叠组X"]
     assert not box._collapsed  # 未知组默认展开
     box.header.click()        # 用户折叠
     assert box._collapsed and not box.content.isVisibleTo(p)
-    assert str(_settings().value("collapsed/测试折叠组X")).lower() == "true"
-    p2 = ParamPanel()
+    assert str(settings.value("collapsed/测试折叠组X")).lower() == "true"
+    p2 = ParamPanel(settings=settings)
     p2.set_schema(specs, {})
     assert p2._boxes["测试折叠组X"]._collapsed  # 新面板恢复折叠状态
     p2._boxes["测试折叠组X"].header.click()

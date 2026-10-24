@@ -12,10 +12,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QScrollArea,
-    QSizePolicy,
     QSlider,
     QSpinBox,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,7 +26,7 @@ DEFAULT_COLLAPSED = {"预处理", "过滤", "手动校正"}
 _SETTINGS_ORG = "bac_count"
 
 
-def _settings() -> QSettings:
+def default_settings() -> QSettings:
     return QSettings(_SETTINGS_ORG, _SETTINGS_ORG)
 
 
@@ -86,8 +84,40 @@ class _SliderRow(QWidget):
         self.blockSignals(False)
 
 
+class _HeaderWidget(QWidget):
+    """可点击的分组标题行（左对齐；QToolButton 会忽略样式表 text-align）。"""
+
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("grpHeader")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "#grpHeader{background:transparent;}"
+            "#grpHeader:hover{background:rgba(128,128,128,45); border-radius:4px;}"
+            "#grpHeader QLabel{font-weight:600;}"
+        )
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 5, 8, 5)
+        self.lbl = QLabel(self)
+        lay.addWidget(self.lbl)
+        lay.addStretch(1)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, ev) -> None:
+        if ev.button() == Qt.LeftButton:
+            self.clicked.emit()
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def click(self) -> None:
+        self.clicked.emit()
+
+
 class CollapsibleBox(QWidget):
-    """标题按钮（▾/▸）+ 可折叠内容区。"""
+    """标题行（▾/▸）+ 可折叠内容区。"""
 
     collapsedChanged = Signal(str, bool)  # group, collapsed
 
@@ -98,15 +128,7 @@ class CollapsibleBox(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        self.header = QToolButton(self)
-        self.header.setCheckable(True)
-        self.header.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.header.setAutoRaise(True)
-        self.header.setStyleSheet(
-            "QToolButton{text-align:left; padding:5px 8px; font-weight:600; border:none;}"
-            "QToolButton:hover{background:rgba(128,128,128,40); border-radius:4px;}"
-        )
+        self.header = _HeaderWidget(self)
         self._sync_header()
         lay.addWidget(self.header)
         self.content = QWidget(self)
@@ -115,17 +137,16 @@ class CollapsibleBox(QWidget):
         self.form.setLabelAlignment(Qt.AlignLeft)
         self.content.setVisible(not collapsed)
         lay.addWidget(self.content)
-        self.header.toggled.connect(self._on_toggled)
+        self.header.clicked.connect(self._toggle)
 
     def _sync_header(self) -> None:
-        self.header.setText(f"{'▸' if self._collapsed else '▾'}  {self.group}")
-        self.header.setChecked(self._collapsed)
+        self.header.lbl.setText(f"{'▸' if self._collapsed else '▾'}  {self.group}")
 
-    def _on_toggled(self, checked: bool) -> None:
-        self._collapsed = checked
-        self.content.setVisible(not checked)
+    def _toggle(self) -> None:
+        self._collapsed = not self._collapsed
+        self.content.setVisible(not self._collapsed)
         self._sync_header()
-        self.collapsedChanged.emit(self.group, checked)
+        self.collapsedChanged.emit(self.group, self._collapsed)
 
     def add_row(self, label: QWidget, field: QWidget) -> None:
         self.form.addRow(label, field)
@@ -134,8 +155,9 @@ class CollapsibleBox(QWidget):
 class ParamPanel(QScrollArea):
     valueChanged = Signal(str, object)  # key, value
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings: QSettings | None = None):
         super().__init__(parent)
+        self._settings = settings or default_settings()
         self.setWidgetResizable(True)
         self._container = QWidget()
         self._layout = QVBoxLayout(self._container)
@@ -147,15 +169,14 @@ class ParamPanel(QScrollArea):
         self._loading = False
 
     # ---------- 折叠状态持久化 ----------
-    @staticmethod
-    def _collapsed_for(group: str) -> bool:
-        v = _settings().value(f"collapsed/{group}", None)
+    def _collapsed_for(self, group: str) -> bool:
+        v = self._settings.value(f"collapsed/{group}", None)
         if v is None:
             return group in DEFAULT_COLLAPSED
         return str(v).lower() in ("true", "1")
 
     def _remember_collapse(self, group: str, collapsed: bool) -> None:
-        _settings().setValue(f"collapsed/{group}", collapsed)
+        self._settings.setValue(f"collapsed/{group}", collapsed)
 
     # ---------- 构建 ----------
     def set_schema(self, specs: list[ParamSpec], values: dict[str, Any]) -> None:
