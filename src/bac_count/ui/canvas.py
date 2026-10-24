@@ -40,10 +40,12 @@ class Canvas(QGraphicsView):
     emptyClicked = Signal(float, float)     # 场景坐标
     colonyClicked = Signal(object)          # Colony
     modeHintChanged = Signal(str)           # 状态栏提示（临时模式切换反馈）
+    pathsDropped = Signal(list)             # 拖入图片 list[Path]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.setAcceptDrops(True)
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.Antialiasing)
@@ -67,6 +69,9 @@ class Canvas(QGraphicsView):
         self._pix.setPixmap(pixmap)
         self._scene.setSceneRect(0, 0, pixmap.width(), pixmap.height())
         self.fit_view()
+
+    def clear_image(self) -> None:
+        self.set_image(bgra_to_qpixmap(np.zeros((10, 10, 3), np.uint8), None))
 
     def set_colonies(self, colonies: Sequence[Colony], scale: float) -> None:
         """colonies 为原图坐标；scale 换算到场景。"""
@@ -232,3 +237,28 @@ class Canvas(QGraphicsView):
             if d <= max(c.r * self._scale + 4, 10) and (best_d is None or d < best_d):
                 best, best_d = c, d
         return best
+
+    # ---------- 拖放导入 ----------
+    def dragEnterEvent(self, ev) -> None:
+        from bac_count.ui.file_list import extract_image_paths
+
+        if ev.mimeData().hasUrls() and extract_image_paths(ev.mimeData().urls()):
+            ev.acceptProposedAction()
+        else:
+            super().dragEnterEvent(ev)
+
+    def dragMoveEvent(self, ev) -> None:
+        if ev.mimeData().hasUrls():
+            ev.acceptProposedAction()  # dragEnter 已验证过图片类型
+        else:
+            super().dragMoveEvent(ev)
+
+    def dropEvent(self, ev) -> None:
+        from bac_count.ui.file_list import extract_image_paths
+
+        paths = extract_image_paths(ev.mimeData().urls())
+        if paths:
+            ev.acceptProposedAction()
+            self.pathsDropped.emit(paths)
+        else:
+            super().dropEvent(ev)

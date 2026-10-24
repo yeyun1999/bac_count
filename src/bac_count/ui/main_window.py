@@ -24,6 +24,7 @@ from bac_count.core.pipeline import POST_SCHEMA, PRE_SCHEMA, WORKING_MAX, defaul
 from bac_count.core.preprocess import IMG_EXTS, load_image
 from bac_count.core.registry import DETECTORS, get_detector
 from bac_count.ui.canvas import MODE_ADD, MODE_BROWSE, MODE_REMOVE, Canvas, bgra_to_qpixmap
+from bac_count.ui.file_list import FileList
 from bac_count.ui.param_panel import ParamPanel
 from bac_count.ui.presets import load_preset, save_preset
 from bac_count.ui.worker import DetectionService
@@ -54,6 +55,21 @@ class MainWindow(QMainWindow):
         self.canvas.emptyClicked.connect(self._on_add_click)
         self.canvas.colonyClicked.connect(self._on_remove_click)
         self.canvas.modeHintChanged.connect(self._update_mode_hint)
+        self.canvas.pathsDropped.connect(lambda ps: self.load_paths(ps, append=True))
+
+        self.file_list = FileList(self)
+        self.file_list.pathsDropped.connect(lambda ps: self.load_paths(ps, append=True))
+        self.file_list.deleteRequested.connect(self._delete_paths)
+        self.file_list.clearRequested.connect(self._clear_list)
+        self.file_list.currentItemChanged.connect(self._on_list_current_changed)
+        self._list_syncing = False
+        self._file_dock = QDockWidget("文件列表", self)
+        self._file_dock.setObjectName("file_dock")
+        self._file_dock.setWidget(self.file_list)
+        self._file_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self._file_dock)
+        self._file_dock.setMinimumWidth(200)
+        self.resizeDocks([self._file_dock], [230], Qt.Horizontal)
 
         self.panel = ParamPanel(self)
         self.panel.valueChanged.connect(self._on_param_changed)
@@ -97,6 +113,10 @@ class MainWindow(QMainWindow):
 
         act("打开图片", self.open_files)
         act("打开文件夹", self.open_folder)
+        tb.addSeparator()
+        self._a_filelist = act("文件列表", self._toggle_file_list, "Ctrl+E", True)
+        self._a_filelist.setChecked(True)
+        self._file_dock.visibilityChanged.connect(lambda v: self._a_filelist.setChecked(v))
         tb.addSeparator()
         act("◀ 上一张", lambda: self._navigate(-1), "Alt+Left")
         act("下一张 ▶", lambda: self._navigate(1), "Alt+Right")
@@ -173,10 +193,68 @@ class MainWindow(QMainWindow):
             return
         self.load_paths(files)
 
-    def load_paths(self, paths: list[Path]) -> None:
-        self.images = list(paths)
+    def load_paths(self, paths: list[Path], append: bool = False) -> None:
+        paths = [Path(p) for p in paths]
+        if append:
+            new = [p for p in paths if p not in self.images]
+            if not new:
+                return
+            self.images += new
+            if self.idx < 0 or self.bgr is None:
+                self.idx = len(self.images) - len(new)  # 当前无图 → 直接看新导入的第一张
+                self.load_current()
+            else:
+                self._sync_list()
+            return
+        self.images = paths
         self.idx = 0
         self.load_current()
+
+    def _toggle_file_list(self) -> None:
+        self._file_dock.setVisible(not self._file_dock.isVisible())
+
+    def _sync_list(self) -> None:
+        self._list_syncing = True
+        self.file_list.sync(self.images, self.idx)
+        self._list_syncing = False
+
+    def _on_list_current_changed(self, cur, _prev=None) -> None:
+        if self._list_syncing or cur is None:
+            return
+        row = self.file_list.row(cur)
+        if 0 <= row < len(self.images) and row != self.idx:
+            self.idx = row
+            self.load_current()
+
+    def _delete_paths(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        old_current = self.images[self.idx] if 0 <= self.idx < len(self.images) else None
+        self.images = [p for p in self.images if p not in set(paths)]
+        if not self.images:
+            self._reset_view()
+            return
+        self.idx = min(self.idx, len(self.images) - 1)
+        if old_current in paths:
+            self.load_current()
+        else:
+            self._sync_list()
+
+    def _clear_list(self) -> None:
+        self._reset_view()
+
+    def _reset_view(self) -> None:
+        self.images = []
+        self.idx = -1
+        self.bgr = None
+        self.alpha = None
+        self.last_auto = []
+        self.canvas.set_colonies([], 1.0)
+        self.canvas.clear_image()
+        self._lbl_count.setText("计数: —")
+        self._lbl_detail.setText("")
+        self._lbl_image.setText("未加载图片")
+        self._sync_list()
 
     def _navigate(self, step: int) -> None:
         if not self.images:
@@ -201,6 +279,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_image(bgra_to_qpixmap(wb, wa))
         self.last_auto = []
         self._lbl_image.setText(f"{self.idx + 1}/{len(self.images)}  {path.name}  ({w}×{h})")
+        self._sync_list()
         self._update_edit_actions()
         self.request_detection()
 
@@ -228,9 +307,13 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 编辑
     def _history(self) -> EditHistory:
+        if not self.images or not (0 <= self.idx < len(self.images)):
+            return EditHistory()
         return self.histories.setdefault(str(self.images[self.idx]), EditHistory())
 
     def _refresh_merge(self) -> None:
+        if not self.images:
+            return
         result = merge(self.last_auto, self._history().state)
         self.canvas.set_colonies(result.colonies, self.scale)
         self._lbl_count.setText(f"计数: {result.count}")

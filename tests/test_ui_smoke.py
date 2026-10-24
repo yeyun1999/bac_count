@@ -126,3 +126,52 @@ def test_ctrl_toggles_add_remove(qtbot):
     qtbot.mouseClick(c.viewport(), Qt.LeftButton, pos=empty)
     assert w._current_result().count == base
     w.close()
+
+
+def test_file_list_ops(qtbot):
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    assert len(files) >= 2
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    assert w.file_list.count() == len(files)
+    assert w.file_list.currentRow() == 0
+    # 追加去重
+    w.load_paths(files[:2], append=True)
+    assert len(w.images) == len(files)
+    # 列表点击切换图片
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.file_list.setCurrentRow(1)
+    qtbot.wait(300)
+    assert w.idx == 1
+    # 删除当前图片 → 自动切到下一张
+    cur = w.images[1]
+    w._delete_paths([cur])
+    qtbot.wait(300)
+    assert cur not in w.images
+    assert w.file_list.count() == len(files) - 1
+    assert w.bgr is not None
+    # 清空列表
+    w._clear_list()
+    assert not w.images and w.bgr is None and w.file_list.count() == 0
+    # dock 折叠
+    w._toggle_file_list()
+    assert not w._file_dock.isVisible()
+    w.close()
+
+
+def test_extract_image_paths(tmp_path):
+    from bac_count.ui.file_list import extract_image_paths
+    from PySide6.QtCore import QUrl
+
+    (tmp_path / "a.png").write_bytes(b"x")
+    (tmp_path / "b.txt").write_text("x")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "c.jpg").write_bytes(b"x")
+    urls = [QUrl.fromLocalFile(str(tmp_path / "a.png")), QUrl.fromLocalFile(str(tmp_path / "b.txt")),
+            QUrl.fromLocalFile(str(sub))]
+    got = extract_image_paths(urls)
+    assert [p.name for p in got] == ["a.png", "c.jpg"]
