@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, Qt
 
 from bac_count.ui.canvas import MODE_ADD, MODE_REMOVE
 from bac_count.ui.main_window import MainWindow
@@ -79,4 +79,50 @@ def test_algorithm_switch(qtbot):
         with qtbot.waitSignal(w.service.worker.done, timeout=20000):
             w._on_param_changed("algorithm", display)
     assert w.params["algorithm"] == "hough"
+    w.close()
+
+
+def test_space_temporary_pan(qtbot):
+    from PySide6.QtWidgets import QGraphicsView
+
+    w = MainWindow()
+    qtbot.addWidget(w)
+    c = w.canvas
+    from bac_count.ui.canvas import MODE_ADD
+
+    w._set_mode(MODE_ADD)
+    assert c.dragMode() == QGraphicsView.NoDrag
+    qtbot.keyPress(c, Qt.Key_Space)
+    assert c._space_pan and c.dragMode() == QGraphicsView.ScrollHandDrag
+    qtbot.keyRelease(c, Qt.Key_Space)
+    assert not c._space_pan and c.dragMode() == QGraphicsView.NoDrag
+    w.close()
+
+
+def test_ctrl_toggles_add_remove(qtbot):
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(500)
+    c = w.canvas
+    from bac_count.ui.canvas import MODE_ADD, MODE_REMOVE
+
+    w._set_mode(MODE_ADD)
+    assert c._effective_mode() == MODE_ADD
+    qtbot.keyPress(c, Qt.Key_Control)
+    assert c._effective_mode() == MODE_REMOVE
+    # Ctrl+点击已有菌落 → 删除（而非添加）
+    target = w._current_result().colonies[0]
+    base = w._current_result().count
+    pos = c.mapFromScene(QPointF(target.x * c._scale, target.y * c._scale))
+    qtbot.mouseClick(c.viewport(), Qt.LeftButton, pos=pos)
+    assert w._current_result().count == base - 1
+    qtbot.keyRelease(c, Qt.Key_Control)
+    assert c._effective_mode() == MODE_ADD
+    # 松开 Ctrl 后回到添加模式：点击空白 → 添加
+    empty = c.mapFromScene(QPointF(5, 5))
+    qtbot.mouseClick(c.viewport(), Qt.LeftButton, pos=empty)
+    assert w._current_result().count == base
     w.close()

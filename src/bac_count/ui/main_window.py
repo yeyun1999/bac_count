@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.canvas)
         self.canvas.emptyClicked.connect(self._on_add_click)
         self.canvas.colonyClicked.connect(self._on_remove_click)
+        self.canvas.modeHintChanged.connect(self._update_mode_hint)
 
         self.panel = ParamPanel(self)
         self.panel.valueChanged.connect(self._on_param_changed)
@@ -136,14 +137,24 @@ class MainWindow(QMainWindow):
         act("加载预设", self.load_preset)
         act("恢复默认", self.reset_params)
 
+        # 工具栏按钮不抢焦点，保证空格/Ctrl 直达画布
+        from PySide6.QtWidgets import QToolButton
+        for btn in tb.findChildren(QToolButton):
+            btn.setFocusPolicy(Qt.NoFocus)
+
     def _build_status(self) -> None:
         self._lbl_count = QLabel("计数: —")
+        self._lbl_mode = QLabel("")
         self._lbl_detail = QLabel("")
         self._lbl_image = QLabel("未加载图片")
         sb = self.statusBar()
         sb.addWidget(self._lbl_count)
-        sb.addWidget(self._lbl_detail, 1)
+        sb.addWidget(self._lbl_mode, 1)
+        sb.addWidget(self._lbl_detail)
         sb.addPermanentWidget(self._lbl_image)
+
+    def _update_mode_hint(self, hint: str) -> None:
+        self._lbl_mode.setText(hint)
 
     # ------------------------------------------------------------------ 打开
     def open_files(self) -> None:
