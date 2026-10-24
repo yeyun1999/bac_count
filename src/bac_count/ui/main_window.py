@@ -410,12 +410,13 @@ class MainWindow(QMainWindow):
         cur = str(self.images[self.idx])
         targets = [str(p) for p in paths if str(p) != cur]
         if not targets:
-            self.statusBar().showMessage("没有可复制的目标（选中项为空或都是当前图）", 3000)
+            self.statusBar().showMessage("⚠ 选中项里没有其他图片（只有当前图），未复制", 5000)
             return
         snap = dict(self.params)
         for t in targets:
             self.image_params[t] = dict(snap)
-        self.statusBar().showMessage(f"已将当前参数复制到 {len(targets)} 张图片", 4000)
+        self.statusBar().showMessage(
+            f"已将「{self.images[self.idx].name}」的参数复制到 {len(targets)} 张图片", 5000)
 
     def _copy_params_to_all(self) -> None:
         if not self.images:

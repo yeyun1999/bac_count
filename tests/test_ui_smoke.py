@@ -203,6 +203,90 @@ def test_multiselect_survives_navigation(qtbot):
     w.close()
 
 
+def _send_context_menu(widget, viewport_pos) -> None:
+    """QTest 合成鼠标事件不会生成 QContextMenuEvent，手动发送。"""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QContextMenuEvent
+    from PySide6.QtWidgets import QApplication
+
+    gp = widget.mapToGlobal(viewport_pos)
+    ev = QContextMenuEvent(QContextMenuEvent.Reason.Mouse,
+                           QPoint(viewport_pos), QPoint(gp))
+    # QAbstractScrollArea 的 contextMenuEvent 由 viewport 事件转发触发
+    QApplication.sendEvent(widget.viewport(), ev)
+
+
+def test_rightclick_extends_selection_and_copies(qtbot, monkeypatch):
+    """回归：用户报的 bug——右键未选中项会清空多选，导致"复制→选中项"目标为空。"""
+    from bac_count.ui.file_list import FileList
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    assert len(files) >= 4
+    captured = []
+    monkeypatch.setattr(FileList, "_popup_menu", lambda self, menu, pos: captured.append(menu))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    fl = w.file_list
+    vp = fl.viewport()
+
+    def pos(r):
+        return fl.visualItemRect(fl.item(r)).center()
+
+    def sel_rows():
+        return {fl.row(i) for i in fl.selectedItems()}
+
+    # 单击 row2 → 当前图=2；调参 blur_k=15
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        qtbot.mouseClick(vp, Qt.LeftButton, pos=pos(2))
+    qtbot.wait(200)
+    w._on_param_changed("blur_k", 15)
+    # Ctrl 多选 0、1
+    qtbot.mouseClick(vp, Qt.LeftButton, Qt.ControlModifier, pos(0))
+    qtbot.mouseClick(vp, Qt.LeftButton, Qt.ControlModifier, pos(1))
+    assert sel_rows() == {2, 0, 1}
+    # 右键未选中的 row3 → 加选而非清选，且弹出菜单
+    qtbot.mouseClick(vp, Qt.RightButton, pos=pos(3))
+    assert sel_rows() == {2, 0, 1, 3}, f"右键破坏了选区: {sel_rows()}"
+    _send_context_menu(fl, pos(3))
+    assert captured, "右键没有触发上下文菜单"
+    menu = captured[-1]
+    act = next(a for a in menu.actions() if a.text().startswith("复制当前图参数 → 选中项"))
+    assert "(3)" in act.text() and act.isEnabled()
+    act.trigger()
+    for r in (0, 1, 3):
+        assert w.image_params[str(files[r])]["blur_k"] == 15, files[r].name
+    assert str(files[4]) not in w.image_params  # 未选中未复制
+    w.close()
+
+
+def test_copy_to_selected_disabled_when_only_current(qtbot, monkeypatch):
+    from bac_count.ui.file_list import FileList
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    captured = []
+    monkeypatch.setattr(FileList, "_popup_menu", lambda self, menu, pos: captured.append(menu))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    fl = w.file_list
+    vp = fl.viewport()
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        qtbot.mouseClick(vp, Qt.LeftButton, pos=fl.visualItemRect(fl.item(1)).center())
+    qtbot.wait(200)
+    # 选区只有当前图 → 目标数 0 → 菜单项置灰（不再是静默失败）
+    qtbot.mouseClick(vp, Qt.RightButton, pos=fl.visualItemRect(fl.item(1)).center())
+    _send_context_menu(fl, fl.visualItemRect(fl.item(1)).center())
+    menu = captured[-1]
+    act = next(a for a in menu.actions() if a.text().startswith("复制当前图参数 → 选中项"))
+    assert "(0)" in act.text() and not act.isEnabled()
+    w.close()
+
+
 def test_per_image_params(qtbot):
     files = sorted(SAMPLE_DIR.glob("*.png"))
     assert len(files) >= 2
