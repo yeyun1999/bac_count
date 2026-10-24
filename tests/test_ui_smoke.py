@@ -287,6 +287,41 @@ def test_copy_to_selected_disabled_when_only_current(qtbot, monkeypatch):
     w.close()
 
 
+def test_export_batch(qtbot, monkeypatch, tmp_path):
+    """批量导出：PNG→文件夹、CSV 一图一行、JSON 含路径/参数/菌落。"""
+    import csv as _csv
+    import json as _json
+
+    from PySide6.QtWidgets import QFileDialog
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))[:2]
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(600)
+    w._on_add_click(50, 50)  # 当前图加一个手动菌落
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(tmp_path)))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "out"), "")))
+    w.export_png()
+    w.export_csv()
+    w.export_json()
+    assert len(list((tmp_path / "annotated").glob("*.png"))) == 2
+    rows = list(_csv.reader(open(tmp_path / "out.csv", encoding="utf-8-sig")))
+    assert rows[0][:2] == ["文件名", "菌落数量"] and len(rows) == 3  # 表头+2图
+    data = _json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert data["image_count"] == 2 and data["total_count"] == sum(i["count"] for i in data["images"])
+    img0 = next(i for i in data["images"] if i["name"] == files[0].name)
+    assert img0["path"] == str(files[0])
+    assert {"params", "colonies", "edits"} <= set(img0)
+    assert img0["count"] == len(img0["colonies"])
+    assert any(c["source"] == "manual" for c in img0["colonies"])
+    assert "algorithm" in img0["params"]
+    w.close()
+
+
 def test_view_modes(qtbot):
     from bac_count.ui.canvas import VIEW_MARK, VIEW_ORIG, VIEW_PREP
 

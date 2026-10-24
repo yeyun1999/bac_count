@@ -8,20 +8,22 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QToolBar,
     QToolButton,
 )
 
 from bac_count.core.edits import EditHistory
-from bac_count.core.export import export_csv, export_json, export_png
-from bac_count.core.models import Colony, merge
-from bac_count.core.pipeline import POST_SCHEMA, PRE_SCHEMA, WORKING_MAX, default_params
+from bac_count.core.export import colony_dict, edits_dict, export_png, write_full_json, write_summary_csv
+from bac_count.core.models import Colony, EditState, merge
+from bac_count.core.pipeline import POST_SCHEMA, PRE_SCHEMA, WORKING_MAX, default_params, run_detection
 from bac_count.core.preprocess import IMG_EXTS, load_image
 from bac_count.core.registry import DETECTORS, get_detector
 from bac_count.ui.canvas import MODE_ADD, MODE_BROWSE, MODE_REMOVE, Canvas, bgra_to_qpixmap
@@ -156,8 +158,9 @@ class MainWindow(QMainWindow):
         self._a_redo.setEnabled(False)
         tb.addSeparator()
 
-        menu_btn("📤 导出", [("标注图 PNG", self.export_png), ("菌落明细 CSV", self.export_csv),
-                             ("完整状态 JSON", self.export_json)])
+        menu_btn("📤 导出", [("标注图 PNG（全部图→文件夹）", self.export_png),
+                             ("汇总表 CSV（一图一行）", self.export_csv),
+                             ("完整数据 JSON（全部图）", self.export_json)])
         menu_btn("⚙ 预设", [("保存预设", self.save_preset), ("加载预设", self.load_preset),
                              ("恢复默认参数", self.reset_params), ("清除当前图编辑", self._clear_edits)])
 
@@ -453,42 +456,101 @@ class MainWindow(QMainWindow):
         self._rebuild_panel()
         self.request_detection()
 
-    # ------------------------------------------------------------------ 导出
+    # ------------------------------------------------------------------ 导出（全列表批量）
     def _export_dir(self) -> Path:
         return self.images[self.idx].parent if self.images else Path.cwd()
 
     def _current_result(self):
         return merge(self.last_auto, self._history().state)
 
+    def _result_for_path(self, p: Path):
+        """任意列表图的最终结果：当前图用内存态；其他图按其参数即时重算。
+
+        返回 (DetectionResult, params_used)。
+        """
+        key = str(p)
+        if self.images and 0 <= self.idx < len(self.images) and self.images[self.idx] == p:
+            return self._current_result(), dict(self.params)
+        params = dict(self.image_params.get(key) or default_params())
+        bgr, alpha = load_image(p)
+        auto, _ctx, _s = run_detection(bgr, alpha, params)
+        hist = self.histories.get(key)
+        result = merge(auto, hist.state if hist else EditState())
+        return result, params
+
+    def _iter_with_progress(self, title: str):
+        """带进度/取消的批量迭代器；取消则提前结束。"""
+        dlg = QProgressDialog(title, "取消", 0, len(self.images), self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(200)
+        for i, p in enumerate(self.images):
+            dlg.setValue(i)
+            QApplication.processEvents()
+            if dlg.wasCanceled():
+                break
+            yield p
+        dlg.setValue(dlg.maximum())
+        dlg.close()
+
     def export_png(self) -> None:
-        if self.bgr is None:
+        if not self.images:
             return
-        r = self._current_result()
-        default = str(self._export_dir() / f"{self.images[self.idx].stem}_count{r.count}.png")
-        f, _ = QFileDialog.getSaveFileName(self, "导出标注图", default, "PNG (*.png)")
-        if f:
-            export_png(f, self.bgr, r.colonies)
-            self.statusBar().showMessage(f"已导出 {f}", 4000)
+        folder = QFileDialog.getExistingDirectory(self, "导出标注图到文件夹", str(self._export_dir()))
+        if not folder:
+            return
+        out = Path(folder) / "annotated"
+        out.mkdir(exist_ok=True)
+        n = 0
+        for p in self._iter_with_progress("正在导出标注图…"):
+            try:
+                bgr, _ = load_image(p)
+                result, _ = self._result_for_path(p)
+                export_png(out / f"{p.stem}_count{result.count}.png", bgr, result.colonies)
+                n += 1
+            except Exception as e:
+                print(f"导出失败 {p}: {e}")
+        self.statusBar().showMessage(f"已导出 {n} 张标注图到 {out}", 6000)
 
     def export_csv(self) -> None:
-        if self.bgr is None:
+        if not self.images:
             return
-        r = self._current_result()
-        default = str(self._export_dir() / f"{self.images[self.idx].stem}.csv")
-        f, _ = QFileDialog.getSaveFileName(self, "导出 CSV", default, "CSV (*.csv)")
-        if f:
-            export_csv(f, r.colonies, self.images[self.idx].name)
-            self.statusBar().showMessage(f"已导出 {f}", 4000)
+        f, _ = QFileDialog.getSaveFileName(self, "导出汇总 CSV", str(self._export_dir() / "counts_summary.csv"), "CSV (*.csv)")
+        if not f:
+            return
+        rows = []
+        for p in self._iter_with_progress("正在汇总…"):
+            try:
+                result, _ = self._result_for_path(p)
+                rows.append({"name": p.name, "count": result.count, "auto_total": result.auto_total,
+                             "added": result.added, "removed": result.removed})
+            except Exception as e:
+                print(f"汇总失败 {p}: {e}")
+        write_summary_csv(f, rows)
+        self.statusBar().showMessage(f"已导出 {len(rows)} 行汇总到 {f}", 6000)
 
     def export_json(self) -> None:
-        if self.bgr is None:
+        if not self.images:
             return
-        r = self._current_result()
-        default = str(self._export_dir() / f"{self.images[self.idx].stem}.json")
-        f, _ = QFileDialog.getSaveFileName(self, "导出 JSON", default, "JSON (*.json)")
-        if f:
-            export_json(f, r.colonies, self._history().state, self.params, self.images[self.idx].name)
-            self.statusBar().showMessage(f"已导出 {f}", 4000)
+        f, _ = QFileDialog.getSaveFileName(self, "导出完整 JSON", str(self._export_dir() / "bac_count_export.json"), "JSON (*.json)")
+        if not f:
+            return
+        items = []
+        for p in self._iter_with_progress("正在导出完整数据…"):
+            try:
+                result, params = self._result_for_path(p)
+                hist = self.histories.get(str(p))
+                items.append({
+                    "path": str(p),
+                    "name": p.name,
+                    "count": result.count,
+                    "params": params,
+                    "colonies": [colony_dict(c) for c in result.colonies],
+                    "edits": edits_dict(hist.state if hist else EditState()),
+                })
+            except Exception as e:
+                print(f"导出失败 {p}: {e}")
+        write_full_json(f, items)
+        self.statusBar().showMessage(f"已导出 {len(items)} 张图的完整数据到 {f}", 6000)
 
     def closeEvent(self, ev) -> None:
         self.service.stop()

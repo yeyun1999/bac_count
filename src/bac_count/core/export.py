@@ -1,9 +1,10 @@
-"""导出：CSV / 标注 PNG / JSON 状态。"""
+"""导出：标注 PNG / 简要汇总 CSV（一图一行）/ 完整 JSON（路径+参数+菌落）。"""
 from __future__ import annotations
 
 import csv
 import json
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -11,7 +12,7 @@ import numpy as np
 
 from bac_count.core.models import Colony, EditState
 
-__all__ = ["draw_overlay", "export_png", "export_csv", "export_json"]
+__all__ = ["draw_overlay", "export_png", "write_summary_csv", "write_full_json"]
 
 COLORS = {"auto": (0, 230, 0), "manual": (0, 160, 255)}  # BGR: 绿=自动 橙=手动
 
@@ -29,32 +30,46 @@ def draw_overlay(bgr: np.ndarray, colonies: list[Colony], scale: float = 1.0, sh
 
 
 def export_png(path: str | Path, bgr: np.ndarray, colonies: list[Colony], scale: float = 1.0) -> None:
+    """单张标注图（批量导出时由调用方逐张调用）。"""
     cv2.imwrite(str(path), draw_overlay(bgr, colonies, scale))
 
 
-def export_csv(path: str | Path, colonies: list[Colony], image_name: str = "") -> None:
+def write_summary_csv(path: str | Path, rows: list[dict]) -> None:
+    """rows: [{name, count, auto_total, added, removed}, ...] 一图一行。"""
     p = Path(path)
     if p.suffix.lower() != ".csv":
         p = p.with_suffix(".csv")
-    with open(p, "w", newline="", encoding="utf-8") as f:
+    with open(p, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["image", "id", "x", "y", "radius", "area", "source", "label"])
-        for c in colonies:
-            w.writerow([image_name, c.id, f"{c.x:.1f}", f"{c.y:.1f}", f"{c.r:.1f}", f"{c.area:.1f}", c.source, c.label or ""])
+        w.writerow(["文件名", "菌落数量", "自动检出", "手动添加", "手动排除"])
+        for r in rows:
+            w.writerow([r["name"], r["count"], r["auto_total"], r["added"], r["removed"]])
 
 
-def export_json(path: str | Path, colonies: list[Colony], edits: EditState, params: dict, image_name: str = "") -> None:
+def write_full_json(path: str | Path, items: list[dict]) -> None:
+    """items: [{path, name, count, params, colonies, edits}, ...] 合并为单个 JSON。"""
     p = Path(path)
     if p.suffix.lower() != ".json":
         p = p.with_suffix(".json")
     data = {
-        "image": image_name,
-        "count": len(colonies),
-        "params": params,
-        "colonies": [asdict(c) for c in colonies],
-        "edits": {
-            "additions": [asdict(c) for c in edits.additions],
-            "exclusions": [asdict(e) for e in edits.exclusions],
-        },
+        "tool": "bac_count",
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "image_count": len(items),
+        "total_count": sum(i["count"] for i in items),
+        "images": items,
     }
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def colony_dict(c: Colony) -> dict:
+    return {
+        "id": c.id, "x": round(c.x, 2), "y": round(c.y, 2), "r": round(c.r, 2),
+        "area": round(c.area, 1), "source": c.source, "label": c.label,
+    }
+
+
+def edits_dict(e: EditState) -> dict:
+    return {
+        "additions": [colony_dict(c) for c in e.additions],
+        "exclusions": [{"x": round(x.x, 2), "y": round(x.y, 2), "r": round(x.r, 2)} for x in e.exclusions],
+    }
