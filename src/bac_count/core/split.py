@@ -13,6 +13,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from bac_count.core.color import median_lab_at
 from bac_count.core.models import Colony
 from bac_count.core.registry import PrepContext
 
@@ -21,6 +22,9 @@ __all__ = ["split_merged"]
 _PEAK_SEARCH_TOP = 0.9    # 阈值搜索上限（更高比例对噪声双峰过于宽容）
 _PEAK_SEARCH_STEP = 0.05
 _MIN_SUB_AREA_RATIO = 0.15  # 子区域面积至少占原候选的比例，滤掉分水岭碎屑
+_FRAG_COLOR_MAX = 45.0      # 碎片与候选本体的 Lab 色距上限：拆分的内部二值图是"色盲"
+                            # 的 adaptive 阈值（含马克笔笔画灰晕），异色碎片必须拒绝，
+                            # 否则笔画粗段会被拆成矮胖假菌落（用户 E0-1 实测踩坑）
 _FILL_TRIGGER = 0.88        # 外接圆填充率低于此值 → 花生形，粘连嫌疑（单圆≈0.92）
 _AREA_TRIGGER2 = 1.25       # 配合填充率的次级触发面积倍数（主触发 = split_factor）
 
@@ -99,6 +103,7 @@ def _split_one(ctx, binary, dt, c: Colony, params) -> list[Colony] | None:
         return None
     subs: list[Colony] = []
     min_sub = c.area * _MIN_SUB_AREA_RATIO
+    cand_lab = median_lab_at(ctx.bgr, c.x, c.y, c.r)  # 候选本体参考色（中心种子聚类）
     for new in remap.values():
         region = ((markers == new) & (crop_b > 0)).astype(np.uint8) * 255
         cs, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -109,6 +114,11 @@ def _split_one(ctx, binary, dt, c: Colony, params) -> list[Colony] | None:
         if area < min_sub:
             continue
         (cx, cy), r = cv2.minEnclosingCircle(cnt)
+        if cand_lab is not None:
+            # cx/cy 是裁剪局部坐标，采样必须回到全图坐标（+x0/+y0）
+            frag_lab = median_lab_at(ctx.bgr, cx + x0, cy + y0, r)
+            if frag_lab is not None and float(np.linalg.norm(frag_lab - cand_lab)) > _FRAG_COLOR_MAX:
+                continue  # 与候选本体异色（笔画/杂质），不算菌落
         per = cv2.arcLength(cnt, True)
         circ = 4 * np.pi * area / (per * per) if per > 0 else 0.0
         rect = cv2.minAreaRect(cnt)

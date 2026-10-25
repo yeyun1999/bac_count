@@ -74,3 +74,34 @@ def test_split_on_samples_no_explosion():
         p["split_on"] = True
         on = len(run_detection(bgr, alpha, p)[0])
         assert on <= max(off * 2.5, off + 10), f"{Path(f).name}: {off} → {on} 异常膨胀"
+
+
+def test_split_rejects_marker_stroke_fragment():
+    """回归（用户 E0-1 实测）：菌落+马克笔粗划合并轮廓，拆分不得产出落在笔画上的异色碎片。
+
+    拆分的内部二值图是色盲的 adaptive 阈值（含笔画），无颜色守卫时笔画粗段会被
+    切成"矮胖块"通过几何过滤，凭空多出一个菌落。
+    """
+    import cv2
+
+    from bac_count.core.registry import PrepContext, get_detector
+    from bac_count.core.split import split_merged
+
+    img = np.zeros((300, 300, 3), np.uint8)
+    img[:, :] = (200, 200, 200)
+    BROWN = (90, 115, 140)  # bgr 褐菌落色
+    cv2.circle(img, (150, 100), 8, BROWN, -1)
+    cv2.rectangle(img, (150, 94), (190, 107), (30, 30, 30), -1)  # 贴住菌落的黑粗划
+    cv2.circle(img, (80, 180), 8, BROWN, -1)
+    cv2.circle(img, (220, 180), 8, BROWN, -1)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    ctx = PrepContext(bgr=img, gray=gray, dish_mask=None, alpha=None)
+
+    p = default_params("adaptive")
+    p["split_on"] = True
+    raw = get_detector("adaptive").detect(ctx, p)
+    assert len(raw) == 3, f"应有 2 单菌落 + 1 合并轮廓，实得 {len(raw)}"
+    out = split_merged(ctx, raw, p)
+    assert len(out) == 3, f"颜色守卫失效，产生了笔画碎片：{[(round(c.x), round(c.y), round(c.r)) for c in out]}"
+    # 笔画中心附近不得出现小半径"菌落"
+    assert all(((c.x - 170) ** 2 + (c.y - 100) ** 2) ** 0.5 > 15 or c.r > 15 for c in out)
