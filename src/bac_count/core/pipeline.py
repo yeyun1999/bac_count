@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from bac_count.core.color import apply_color_filter
+from bac_count.core.dedup import dedup_colonies
 from bac_count.core.models import Colony, ParamSpec
 from bac_count.core.preprocess import make_dish_mask, prepare
 from bac_count.core.registry import PrepContext, get_detector
@@ -74,6 +75,12 @@ POST_SCHEMA: list[ParamSpec] = [
               desc="圆度 4πA/P²，1=正圆。调大排除马克笔细长笔画；过小会把拉丝菌落当笔画滤掉。"),
     ParamSpec("max_aspect", "最大长宽比", "float", 4.0, group="后处理过滤", min=1.0, max=20.0, step=0.5,
               desc="最小外接矩形的长宽比上限，过滤笔画状/拉丝状目标。"),
+    ParamSpec("dedup_on", "合并重叠菌落", "bool", True, group="后处理过滤",
+              desc="两圆交集超过小圆的阈值比例（含大圆套小圆）判为同一菌落，保留大的。"
+                   "Hough 出现双圈/重复圈时靠它收拾；相邻真菌落只在边缘相交，不会被误并。"),
+    ParamSpec("dedup_ovl", "重叠判定阈值", "float", 0.6, group="后处理过滤", min=0.3, max=0.95, step=0.05,
+              desc="交集面积/小圆面积。调小更激进（可能误并相邻菌落）；调大只清理几乎完全重叠。"
+                   "包含情形重叠比=1，任何阈值都能抓到。"),
     ParamSpec("manual_r", "手动菌落半径(px)", "float", 6.0, group="手动校正", min=1.0, max=100.0, step=0.5,
               desc="“添加”模式点击空白处时新菌落的默认半径。"),
 ]
@@ -160,6 +167,8 @@ def run_detection(
     p["min_area"] = float(params.get("min_area", 20)) * s2
     p["max_area"] = float(params.get("max_area", 800)) * s2
     kept = _post_filter(raw, p, dish_mask)
+    if params.get("dedup_on", True):  # ③ 重叠/包含去重（保留大圆）
+        kept = dedup_colonies(kept, float(params.get("dedup_ovl", 0.6)))
 
     inv = 1.0 / scale
     for c in kept:

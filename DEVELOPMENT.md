@@ -34,21 +34,22 @@ src/bac_count/
 ├── core/                          # 纯逻辑层：零 Qt 依赖，可单测
 │   ├── models.py (98)             # Colony/ExclRegion/EditState/DetectionResult/ParamSpec + merge()
 │   ├── preprocess.py (106)        # load_image / make_dish_mask / prepare（预处理链）
-│   ├── pipeline.py (170)          # run_detection 总调度 + PRE/POST_SCHEMA + default_params
+│   ├── pipeline.py (179)          # run_detection 总调度 + PRE/POST_SCHEMA + default_params
 │   ├── registry.py (46)           # Detector ABC + @register 注册表 + PrepContext
 │   ├── detectors/{threshold,adaptive,blob,hough,hsv}.py   # 5 个算法，一文件一个
 │   ├── edits.py (75)              # EditHistory：增删/undo/redo（纯逻辑）
 │   ├── split.py (119)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
 │   ├── color.py (86)              # 颜色过滤：菌落色保留/排除色剔除（color_on 开关，默认关）
+│   ├── dedup.py (48)              # 重叠/包含去重：交集占小圆比例阈值（默认开）
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
-│   ├── main_window.py (619)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
+│   ├── main_window.py (624)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
 │   ├── canvas.py (420)            # QGraphicsView 画布：缩放/平移/标注/交互/视图切换/取色模式
 │   ├── param_panel.py (332)       # schema→控件自动生成 + 折叠分组 + tooltip + ColorListWidget
 │   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
 │   ├── worker.py (56)             # DetectWorker(QThread) + 预处理图回传
 │   └── presets.py (26)            # 参数预设 JSON → ~/.bac_count/presets/
-tests/                             # 49 个：算法/编辑逻辑/GUI 冒烟+交互回归
+tests/                             # 60 个：算法/编辑逻辑/GUI 冒烟+交互回归
 sample/                            # 5 张真实样例（RGBA PNG ~800px，见 §6）
 ```
 
@@ -130,6 +131,21 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
   （配合每图快照 `dict()` 浅拷贝是安全的——禁止原地 append）。
 - E0-3 实测：常规参数下 keep/drop 均 51→51 零误伤；放宽几何（min_circ=0）63→59 正确滤出 4 个墨色笔画。
 
+### 5.8 重叠去重（dedup.py，默认开，run_detection 在几何过滤后执行）
+- 规则：交集面积/小圆面积 ≥ `dedup_ovl`（默认 0.6）→ 同一菌落，**贪心保留面积大的**。
+  大圆套小圆（Hough 对深色中心菌落出双圈）是重叠比=1 的特例，同一参数覆盖。
+- 安全性：相切≈0、中心距=半径≈0.39、中心距 1.8r≈0.1——相邻真菌落不会被误并；
+  adaptive/blob 5 样例开/关计数完全不变（回归测试锁定），Hough 30→22、111→104 即用户报的双圈。
+- 参数在「后处理过滤」组：`dedup_on` + `dedup_ovl`（0.3~0.95）。
+
+### 5.9 HSV 取色模式（detectors/hsv.py，替代旧 H/S/V 六数值框）
+- `hsv_colors`（colorlist，复用 ColorListWidget+🎨）+ `hsv_tol`（容差）+ `morph_k`。空表=返回 []。
+- 每个取到颜色 → cv2 HSV 窗口：H ±tol×0.4（跨 0/179 自动拆两段回绕）、
+  **S 向高饱和放满 / 向培养基只放一半，V 向暗放满 / 向亮只放一半**（菌落通常更饱和更暗；
+  对称窗口在 tol=40 即吞掉整个培养基 → 一整片巨轮廓被 max_area 滤光 → 计数骤降 0，实测教训）。
+- 存在意义：唯一在**原色图**上做区域分割的算法，灰度无反差时是唯一出路；
+  颜色过滤只能删候选、不能发现候选，二者不可互替（用户曾质疑可否删除——结论：保留）。
+
 ## 6. 样例数据与算法基线
 
 `sample/` 5 张 RGBA PNG（~800×800，皿外 alpha=0 且 **RGB 为纯黑**）：
@@ -143,12 +159,12 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 | **adaptive（默认）** | 51 | 5 | 110 | 109 | 22 | 综合最优，5 张手写字零误检 |
 | blob | 51 | 1 | 109 | 106 | 23 | E12 低对比度大菌落漏检 |
 | threshold | 0 | 2 | 82 | 80 | 1 | 低对比度下 Otsu 失效，仅高对比图可用 |
-| hsv | 53 | 0 | 0 | 65 | 0 | 强依赖逐图调 H/S/V 六参数 |
-| hough | 30 | 12 | 17 | 111 | 23 | 参数敏感，易把笔画弧当圆 |
+| hsv | 54 | — | — | — | — | 取色模式：默认 hsv_colors=[] → 全 0（不检测）；E0-3 采 2 色 tol=40 实测 54 |
+| hough | 22 | 9 | 14 | 104 | 18 | 参数敏感易把笔画弧当圆；dedup 把双圈合并后计数更准 |
 
 关键默认值（都是拿样例调出来的，改前先跑 `test_default_algo_regression_on_samples`）：
 `rim_pct=0.12`（0.08 时皿缘暗环与手写字连成 40 万 px² 的巨环）、blob 圆度/惯性比 0.3/0.2、
-HSV 默认 H10-40/S62-190/V85-175（由样例菌落像素分布反推：黑字 V<80、背景 S<62）。
+HSV 取色窗口非对称（S 向高饱和放满、向培养基只放一半，V 反之——对称 ±tol 到 40 就吞培养基，见 §5.7）。
 
 ## 7. UI 交互一览
 
@@ -219,6 +235,14 @@ HSV 默认 H10-40/S62-190/V85-175（由样例菌落像素分布反推：黑字 V
     ⇒ 自己维护动态子控件列表（`self._sw_btns`），只删它们、`insertWidget(i)` 保持在前部。
 16. 笔画/细长线状候选：0.6r 内切圆几乎全是背景像素，"中位色"测出来是培养基色而不是墨色
     （E0-3 实测距黑 130，drop 黑色完全滤不掉手写字）。⇒ 中心像素做种子色聚类（§5.7）。
+17. **切算法不补默认参数 → 检测线程 KeyError**（用户实测 HSV 崩溃）：`default_params(algo)`
+    只含当前算法的键，GUI 里切算法只改 `params["algorithm"]`，新算法的键全靠面板控件
+    "被摸过才写入"。⇒ `main_window._on_param_changed("algorithm")` 里 setdefault 合并
+    `get_detector(name).schema()` 的默认值；detector 侧读取一律 `params.get(key, 兜底)`。
+18. HSV 取色窗口对称 ±tol 是陷阱：菌落↔培养基 S/V 只差 35~40，tol=40 整盘培养基入掩膜，
+    RETR_EXTERNAL 只剩一个巨轮廓被 max_area 滤光 → 计数从 54 直接跳 0（无渐变）。
+    ⇒ 非对称窗口向培养基方向半格（§5.9）。另：OpenCV 5 的 `inRange` 拒收 np.int64 标量元组，
+    边界值必须转 Python int。
 
 ## 9. 如何扩展
 

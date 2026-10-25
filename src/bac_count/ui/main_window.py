@@ -394,7 +394,8 @@ class MainWindow(QMainWindow):
         self.params[key] = cur
         self.panel.set_values({key: cur})
         self._commit_params()
-        if not self.params.get("color_on"):
+        if key in ("keep_colors", "drop_colors") and not self.params.get("color_on"):
+            # 颜色过滤取色后自动开总开关；HSV 取色无需开关（空表=不检测）
             self.params["color_on"] = True
             self.panel.set_values({"color_on": True})
             self.statusBar().showMessage("已自动开启颜色过滤", 4000)
@@ -423,6 +424,10 @@ class MainWindow(QMainWindow):
             name = next((k for k in DETECTORS if DETECTORS[k].display == display), None)
             if name:
                 self.params["algorithm"] = name
+                # 补齐该算法的默认参数——否则检测线程 KeyError（hsv 崩溃根因）
+                for s in get_detector(name).schema():
+                    if s.key not in self.params:
+                        self.params[s.key] = list(s.default) if isinstance(s.default, list) else s.default
             self._commit_params()
             self._rebuild_panel()
             self.request_detection()
