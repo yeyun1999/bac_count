@@ -597,3 +597,37 @@ def test_pick_focus_from_panel_button(qtbot, tmp_path):
                      pos=w.canvas.mapFromScene(QPointF(80, 90)))
     assert len(w.params["keep_colors"]) == n0, "空格平移期间不应取色"
     w.close()
+
+
+def test_loupe_tracks_view_zoom(qtbot, tmp_path):
+    """放大镜源区域随视图缩放自适应（放大视图后放大镜跟着变近）。"""
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import QSettings
+
+    img = np.zeros((300, 300, 3), np.uint8)
+    img[:, :] = (210, 235, 240)
+    cv2.circle(img, (80, 90), 10, (60, 60, 210), -1)
+    f = tmp_path / "scene.png"
+    assert cv2.imwrite(str(f), img)
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    w.show()
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths([f])
+    qtbot.wait(200)
+    c = w.canvas
+    c.enter_pick()
+    c._update_loupe(QPointF(80, 90), QPointF(100, 100))
+    s1 = c._loupe._src
+    c.zoom(2.0)
+    c._update_loupe(QPointF(80, 90), QPointF(100, 100))
+    s2 = c._loupe._src
+    assert s2 < s1 / 1.5, f"视图放大2x后源区域应约减半：{s1:.1f}→{s2:.1f}"
+    for _ in range(8):
+        c.zoom(0.2)
+        c._update_loupe(QPointF(80, 90), QPointF(100, 100))
+    assert c._loupe._src <= 160.0, "远端应被钳制"
+    c.cancel_pick()
+    w.close()

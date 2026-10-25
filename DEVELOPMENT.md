@@ -129,8 +129,10 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 - 放在拆分前：马克笔字等异色大块先被剔掉，拆分的中位面积基准更干净。
 - UI 取色器：面板色块行 🎨 → 画布进入取色模式（左键取一个自动退出/自动开 color_on，
   Ctrl+左键连取，右键/Esc 取消，**按住空格=临时平移**（取色暂停、放大镜隐藏））；
-  取色时光标旁跟随**圆形放大镜**（_LoupeWidget：5.3× 像素放大+十字+RGB 色卡，
-  事件驱动零定时器；WA_TransparentForMouseEvents 不挡点击；换图自动 cancel_pick）；
+  取色时光标旁跟随**圆形放大镜**（_LoupeWidget：源区域随视图缩放自适应，
+  观感恒为**屏幕当前倍率×3**（`LOUPE_REL`，源区域=D/(view_scale×3)，钳制 4~160 场景 px），
+  最近邻放大+十字+RGB 色卡，事件驱动零定时器；WA_TransparentForMouseEvents 不挡点击；
+  换图自动 cancel_pick）；
   色块点击=移除该色；`ColorListWidget` 值永远整表替换
   （配合每图快照 `dict()` 浅拷贝是安全的——禁止原地 append）。
 - E0-3 实测：常规参数下 keep/drop 均 51→51 零误伤；放宽几何（min_circ=0）63→59 正确滤出 4 个墨色笔画。

@@ -33,7 +33,7 @@ class _LoupeWidget(QWidget):
     """取色放大镜：圆形局部放大 + 中心十字 + 颜色样本条（鼠标旁，不拦事件）。"""
 
     D = 132          # 圆直径 px
-    SRC = 25         # 采样源区域（场景像素）→ ~5.3x 放大
+    SRC = 25         # 默认源区域（场景像素）；实际按视图缩放动态算
     H = 160
 
     def __init__(self, parent=None):
@@ -44,9 +44,12 @@ class _LoupeWidget(QWidget):
         self._img: QImage | None = None
         self._cx = self._cy = 0
         self._rgb: tuple | None = None
+        self._src = float(self.SRC)
 
-    def set_sample(self, img: QImage | None, cx: int, cy: int, rgb) -> None:
+    def set_sample(self, img: QImage | None, cx: int, cy: int, rgb, src: float | None = None) -> None:
         self._img, self._cx, self._cy, self._rgb = img, cx, cy, rgb
+        if src is not None:
+            self._src = src
         self.update()
 
     def paintEvent(self, ev) -> None:
@@ -57,8 +60,8 @@ class _LoupeWidget(QWidget):
         path.addEllipse(ring)
         if self._img is not None and not self._img.isNull():
             p.setClipPath(path)
-            half = self.SRC / 2
-            src = QRectF(self._cx + 0.5 - half, self._cy + 0.5 - half, self.SRC, self.SRC)
+            half = self._src / 2
+            src = QRectF(self._cx + 0.5 - half, self._cy + 0.5 - half, self._src, self._src)
             p.drawImage(ring, self._img, src)   # 最近邻缩放，看得清单像素
             p.setClipping(False)
         else:
@@ -102,6 +105,7 @@ def bgra_to_qpixmap(bgr: np.ndarray, alpha: np.ndarray | None) -> QPixmap:
 
 
 class Canvas(QGraphicsView):
+    LOUPE_REL = 3.0                     # 放大镜相对屏幕当前观感的再放大倍数
     emptyClicked = Signal(float, float)     # 场景坐标
     colonyClicked = Signal(object)          # Colony
     modeHintChanged = Signal(str)           # 状态栏提示（临时模式切换反馈）
@@ -313,7 +317,10 @@ class Canvas(QGraphicsView):
         ix = int(round(scene_pos.x()))
         iy = int(round(scene_pos.y()))
         rgb = self.sample_at(scene_pos.x(), scene_pos.y())
-        self._loupe.set_sample(self._pick_img, ix, iy, rgb)
+        # 源区域随视图缩放自适应：放大镜内观感 = 屏幕当前观感 × LOUPE_REL
+        s = abs(self.transform().m11()) or 1.0
+        src = max(4.0, min(160.0, _LoupeWidget.D / (s * self.LOUPE_REL)))
+        self._loupe.set_sample(self._pick_img, ix, iy, rgb, src)
         if not self._loupe.isVisible():
             self._loupe.show()
             self._loupe.raise_()
