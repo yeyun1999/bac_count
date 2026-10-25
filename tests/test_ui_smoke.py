@@ -299,7 +299,7 @@ def test_param_tooltips_and_default_collapse(qtbot, tmp_path):
     assert blur_w.toolTip() == next(s for s in w._full_schema() if s.key == "blur_k").desc
     # 分组顺序 = 检测执行顺序
     assert list(w.panel._boxes) == [
-        "皿 ROI", "预处理", "检测算法", "颜色过滤", "粘连拆分", "后处理过滤", "手动校正"]
+        "皿 ROI", "预处理", "检测算法", "粘连拆分", "颜色过滤", "后处理过滤", "手动校正"]
     # 默认折叠策略：预处理/后处理过滤/手动校正收起，其余展开
     boxes = w.panel._boxes
     assert boxes["预处理"]._collapsed and boxes["后处理过滤"]._collapsed and boxes["手动校正"]._collapsed

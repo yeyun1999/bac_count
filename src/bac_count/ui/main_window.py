@@ -412,7 +412,7 @@ class MainWindow(QMainWindow):
         displays = [DETECTORS[k].display for k in DETECTORS]
         specs = [replace(s, choices=displays) if s.key == "algorithm" else s for s in PRE_SCHEMA]
         algo = self.params.get("algorithm", "adaptive")
-        # 面板顺序 = 执行顺序：皿ROI/预处理 → 检测算法(选择+参数) → 拆分 → 过滤 → 手动
+        # 面板顺序 = 执行顺序：皿ROI/预处理 → 检测算法(选择+参数) → 拆分 → 颜色过滤 → 过滤 → 手动
         return specs + get_detector(algo).schema() + POST_SCHEMA
 
     def _rebuild_panel(self) -> None:

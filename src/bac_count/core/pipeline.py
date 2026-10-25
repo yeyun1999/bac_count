@@ -18,7 +18,7 @@ __all__ = ["PRE_SCHEMA", "POST_SCHEMA", "run_detection", "contours_to_colonies",
 
 WORKING_MAX = 1200  # 调参/预览的工作分辨率上限（长边）
 
-# 面板分组顺序 = 检测执行顺序：皿ROI → 预处理 → 算法(+算法参数) → 颜色过滤 → 拆分 → 过滤 → 手动
+# 面板分组顺序 = 检测执行顺序：皿ROI → 预处理 → 算法(+算法参数) → 拆分 → 颜色过滤 → 过滤 → 手动
 PRE_SCHEMA: list[ParamSpec] = [
     ParamSpec("rim_pct", "皿缘内缩", "float", 0.12, group="皿 ROI", min=0.0, max=0.3, step=0.01,
               desc="从皿缘向内收缩的检测禁区比例，皿缘暗环易出整圈假阳性→调大；贴边菌落被漏→调小。"
@@ -44,9 +44,18 @@ PRE_SCHEMA: list[ParamSpec] = [
 ]
 
 POST_SCHEMA: list[ParamSpec] = [
+    ParamSpec("split_on", "拆分粘连菌落", "bool", False, group="粘连拆分",
+              desc="对面积远超典型菌落的大团做距离变换+分水岭拆分（阈值/自适应/HSV 效果好；"
+                   "Blob/Hough 本身按圆找，收益小）。拆出的碎片仍受面积/圆度过滤。"),
+    ParamSpec("split_factor", "合并判定倍数", "float", 1.6, group="粘连拆分", min=1.2, max=4.0, step=0.1,
+              desc="候选面积 > 全体中位面积×此倍数才尝试拆分。粘连漏拆→调小；"
+                   "菌落大小本来就不均导致误拆→调大。"),
+    ParamSpec("split_peak", "分水岭峰值比", "float", 0.55, group="粘连拆分", min=0.3, max=0.85, step=0.05,
+              desc="距离变换找双核的搜索起点（自动向上搜索至 0.9）。调小更激进，可能把单个"
+                   "不规则菌落拆成两半；误拆→调大。"),
     ParamSpec("color_on", "启用颜色过滤", "bool", False, group="颜色过滤",
               desc="按取色器采到的颜色筛掉候选：与所有“菌落颜色”相差太远的去掉，"
-                   "与“排除颜色”相近的去掉。检测后、拆分前执行，对所有算法生效。"),
+                   "与“排除颜色”相近的去掉。拆分后、几何过滤前执行，对所有算法生效。"),
     ParamSpec("keep_colors", "菌落颜色", "colorlist", [], group="颜色过滤",
               desc="点“🎨”后在图上点菌落本体取色，可取多个。非空时：颜色与所有菌落色"
                    "距离大于容差的候选被去掉。留空=不启用此规则。"),
@@ -58,15 +67,6 @@ POST_SCHEMA: list[ParamSpec] = [
                    "颜色与此表任一项接近（小于容差）的候选被去掉。"),
     ParamSpec("drop_tol", "排除色容差", "float", 35.0, group="颜色过滤", min=5.0, max=200.0, step=5.0,
               desc="判定“同色”的阈值。黑字滤不净→调大；菌落与干扰色太接近被误删→调小。"),
-    ParamSpec("split_on", "拆分粘连菌落", "bool", False, group="粘连拆分",
-              desc="对面积远超典型菌落的大团做距离变换+分水岭拆分（阈值/自适应/HSV 效果好；"
-                   "Blob/Hough 本身按圆找，收益小）。拆出的碎片仍受面积/圆度过滤。"),
-    ParamSpec("split_factor", "合并判定倍数", "float", 1.6, group="粘连拆分", min=1.2, max=4.0, step=0.1,
-              desc="候选面积 > 全体中位面积×此倍数才尝试拆分。粘连漏拆→调小；"
-                   "菌落大小本来就不均导致误拆→调大。"),
-    ParamSpec("split_peak", "分水岭峰值比", "float", 0.55, group="粘连拆分", min=0.3, max=0.85, step=0.05,
-              desc="距离变换找双核的搜索起点（自动向上搜索至 0.9）。调小更激进，可能把单个"
-                   "不规则菌落拆成两半；误拆→调大。"),
     ParamSpec("min_area", "最小面积(px²)", "int", 20, group="后处理过滤", min=1, max=5000, step=1,
               desc="面积小于此值的候选丢弃（含拆分出的碎片）。调小可检出细小菌落，但噪点变多。"),
     ParamSpec("max_area", "最大面积(px²)", "int", 800, group="后处理过滤", min=10, max=50000, step=10,
@@ -158,8 +158,8 @@ def run_detection(
 
     det = get_detector(params.get("algorithm", "adaptive"))
     raw = det.detect(ctx, params)
-    raw = apply_color_filter(ctx, raw, params)  # ① 颜色过滤（先剔除异色大块，拆分基准更干净）
-    raw = split_merged(ctx, raw, params)  # ② 粘连拆分（split_on 关闭时原样返回）
+    raw = split_merged(ctx, raw, params)  # ① 粘连拆分（split_on 关闭时原样返回）
+    raw = apply_color_filter(ctx, raw, params)  # ② 颜色过滤（拆分产物同样参与颜色判定）
 
     # 面积参数按原图 px² 定义 → 换算到工作尺度
     p = dict(params)
