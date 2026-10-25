@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -34,11 +34,15 @@ from bac_count.ui.worker import DetectionService
 
 DEBOUNCE_MS = 150
 
+ICON_PATH = Path(__file__).resolve().parents[1] / "resources" / "logo.png"
+
 
 class MainWindow(QMainWindow):
     def __init__(self, settings=None):
         super().__init__()
         self.setWindowTitle("平板菌落计数")
+        if ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.resize(1440, 900)
 
         self.params: dict = default_params()
@@ -612,6 +616,8 @@ def run() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("bac_count")
+    if ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PATH)))  # 任务栏/Dock 图标
     w = MainWindow()
     w.show()
     if len(sys.argv) > 1:
