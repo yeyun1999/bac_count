@@ -517,3 +517,50 @@ def test_color_pick_flow(qtbot, tmp_path):
                      pos=w.canvas.mapFromScene(QPointF(100, 210)))
     assert not w.canvas._picking and w.params["drop_colors"] == []
     w.close()
+
+
+def test_pick_space_pan_and_loupe(qtbot, tmp_path):
+    """取色中：空格临时平移不吞点击；放大镜跟随并显示正确颜色。"""
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QGraphicsView
+
+    img = np.zeros((300, 300, 3), np.uint8)
+    img[:, :] = (210, 235, 240)
+    cv2.circle(img, (80, 90), 10, (60, 60, 210), -1)
+    f = tmp_path / "scene.png"
+    assert cv2.imwrite(str(f), img)
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    w.show()
+    qtbot.waitExposed(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths([f])
+    qtbot.wait(200)
+    c = w.canvas
+    w.panel.pickRequested.emit("keep_colors")
+    assert c._picking
+
+    pos = c.mapFromScene(QPointF(80, 90))
+    qtbot.mouseMove(c.viewport(), pos=pos)
+    assert c._loupe.isVisibleTo(c.viewport())
+    assert c._loupe._rgb == (210, 60, 60)
+    assert c.dragMode() == QGraphicsView.NoDrag
+
+    qtbot.keyPress(c, Qt.Key_Space)
+    assert c.dragMode() == QGraphicsView.ScrollHandDrag
+    assert not c._loupe.isVisible()
+    n0 = len(w.params["keep_colors"])
+    qtbot.mouseClick(c.viewport(), Qt.LeftButton, pos=pos)
+    assert len(w.params["keep_colors"]) == n0, "空格平移期间的点击不应取色"
+
+    qtbot.keyRelease(c, Qt.Key_Space)
+    assert c._picking and c.dragMode() == QGraphicsView.NoDrag
+
+    with qtbot.waitSignal(c.pickPicked, timeout=5000):
+        qtbot.mouseClick(c.viewport(), Qt.LeftButton, pos=pos)
+    assert not c._picking and not c._loupe.isVisible()
+    assert w.params["keep_colors"] == [[210, 60, 60]]
+    w.close()

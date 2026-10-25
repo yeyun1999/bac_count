@@ -5,7 +5,7 @@ from typing import Sequence
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QToolButton,
+    QWidget,
 )
 
 from bac_count.core.models import Colony
@@ -26,6 +27,65 @@ VIEW_ORIG, VIEW_PREP = "orig", "prep"
 PEN_AUTO = QColor(0, 230, 0)
 PEN_MANUAL = QColor(0, 160, 255)
 PEN_HOVER = QColor(255, 60, 60)
+
+
+class _LoupeWidget(QWidget):
+    """取色放大镜：圆形局部放大 + 中心十字 + 颜色样本条（鼠标旁，不拦事件）。"""
+
+    D = 132          # 圆直径 px
+    SRC = 25         # 采样源区域（场景像素）→ ~5.3x 放大
+    H = 160
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(self.D + 8, self.H)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._img: QImage | None = None
+        self._cx = self._cy = 0
+        self._rgb: tuple | None = None
+
+    def set_sample(self, img: QImage | None, cx: int, cy: int, rgb) -> None:
+        self._img, self._cx, self._cy, self._rgb = img, cx, cy, rgb
+        self.update()
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        ring = QRectF(4, 4, self.D - 4, self.D - 4)
+        path = QPainterPath()
+        path.addEllipse(ring)
+        if self._img is not None and not self._img.isNull():
+            p.setClipPath(path)
+            half = self.SRC / 2
+            src = QRectF(self._cx + 0.5 - half, self._cy + 0.5 - half, self.SRC, self.SRC)
+            p.drawImage(ring, self._img, src)   # 最近邻缩放，看得清单像素
+            p.setClipping(False)
+        else:
+            p.fillPath(path, QColor(70, 70, 70))
+        p.setPen(QPen(QColor(255, 255, 255, 230), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(ring)
+        ctr = ring.center()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):   # 中心十字
+            p.setPen(QPen(QColor(0, 0, 0, 160), 3))
+            p.drawLine(ctr.x() + dx * 3, ctr.y() + dy * 3, ctr.x() + dx * 11, ctr.y() + dy * 11)
+            p.setPen(QPen(QColor(255, 255, 255, 230), 1.4))
+            p.drawLine(ctr.x() + dx * 3, ctr.y() + dy * 3, ctr.x() + dx * 11, ctr.y() + dy * 11)
+        chip = QRectF(4, self.D + 2, self.D - 4, 22)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(40, 42, 46, 225))
+        p.drawRoundedRect(chip, 5, 5)
+        if self._rgb is not None:
+            p.setBrush(QColor(*self._rgb))
+            p.drawRoundedRect(QRectF(8, self.D + 5, 16, 16), 3, 3)
+            p.setPen(QColor(230, 230, 230))
+            p.drawText(QRectF(28, self.D + 2, self.D - 30, 22), Qt.AlignVCenter,
+                       f"{self._rgb[0]},{self._rgb[1]},{self._rgb[2]}")
+        else:
+            p.setPen(QColor(180, 180, 180))
+            p.drawText(chip, Qt.AlignCenter, "透明像素")
+        p.end()
 
 
 def bgra_to_qpixmap(bgr: np.ndarray, alpha: np.ndarray | None) -> QPixmap:
@@ -76,7 +136,10 @@ class Canvas(QGraphicsView):
         self._space_pan = False   # 空格临时平移
         self._ctrl_held = False   # Ctrl 临时反转 添加/删除
         self._picking = False     # 取色模式（panel 🎨 触发）
+        self._pick_img: QImage | None = None   # 取色会话的原图缓存
         self._build_view_bar()
+        self._loupe = _LoupeWidget(self.viewport())
+        self._loupe.hide()
 
     # ---------- 左上视图切换条 / 右上标记开关 ----------
     def _build_view_bar(self) -> None:
@@ -131,6 +194,8 @@ class Canvas(QGraphicsView):
 
     # ---------- 图像与标注 ----------
     def set_image(self, pixmap) -> None:
+        if self._picking:
+            self.cancel_pick()  # 换图后旧缓存/坐标语义失效
         self._pix.setPixmap(pixmap)
         self._scene.setSceneRect(0, 0, pixmap.width(), pixmap.height())
         self.fit_view()
@@ -209,30 +274,56 @@ class Canvas(QGraphicsView):
 
     # ---------- 取色模式 ----------
     def enter_pick(self) -> None:
+        pm = self._pix.pixmap()
+        self._pick_img = None if pm.isNull() else pm.toImage()
         self._picking = True
-        self.setDragMode(QGraphicsView.NoDrag)
-        self.viewport().setCursor(Qt.CrossCursor)
-        self.modeHintChanged.emit("🎨 取色：左键点击颜色（Ctrl+左键可连取多个），右键/Esc 取消")
+        self._apply_drag_and_cursor()
+        self._loupe.show()
+        self._loupe.raise_()
+
+    def _end_pick(self) -> None:
+        self._picking = False
+        self._pick_img = None
+        self._loupe.hide()
+        self._apply_drag_and_cursor()
 
     def cancel_pick(self) -> None:
         if not self._picking:
             return
-        self._picking = False
-        self._apply_drag_and_cursor()
+        self._end_pick()
         self.pickCancelled.emit()
 
     def sample_at(self, sx: float, sy: float) -> tuple[int, int, int] | None:
-        """从**原图** pixmap（非预处理视图）按场景坐标取 RGB；皿外透明像素返回 None。"""
-        pm = self._pix.pixmap()
-        if pm.isNull():
-            return None
-        img = pm.toImage()
+        """从**原图**（非预处理视图）按场景坐标取 RGB；皿外透明像素返回 None。"""
+        img = self._pick_img if self._pick_img is not None else None
+        if img is None:
+            pm = self._pix.pixmap()
+            if pm.isNull():
+                return None
+            img = pm.toImage()
         x = min(max(int(round(sx)), 0), img.width() - 1)
         y = min(max(int(round(sy)), 0), img.height() - 1)
         col = img.pixelColor(x, y)
         if col.alpha() < 128:
             return None
         return (col.red(), col.green(), col.blue())
+
+    def _update_loupe(self, scene_pos: QPointF, vp_pos) -> None:
+        ix = int(round(scene_pos.x()))
+        iy = int(round(scene_pos.y()))
+        rgb = self.sample_at(scene_pos.x(), scene_pos.y())
+        self._loupe.set_sample(self._pick_img, ix, iy, rgb)
+        if not self._loupe.isVisible():
+            self._loupe.show()
+            self._loupe.raise_()
+        vw, vh = self.viewport().width(), self.viewport().height()
+        x = int(vp_pos.x()) + 20
+        y = int(vp_pos.y()) + 16
+        if x + self._loupe.width() > vw:
+            x = int(vp_pos.x()) - 20 - self._loupe.width()
+        if y + self._loupe.height() > vh:
+            y = int(vp_pos.y()) - 16 - self._loupe.height()
+        self._loupe.move(max(0, x), max(0, y))
 
     def _effective_mode(self) -> str:
         """按住 Ctrl 时 添加↔删除 临时互换；浏览模式不受影响。"""
@@ -244,6 +335,20 @@ class Canvas(QGraphicsView):
         return self._mode
 
     def _apply_drag_and_cursor(self) -> None:
+        if self._picking:
+            if self._space_pan:  # 取色中按住空格 → 临时平移，放大镜让位
+                self.setDragMode(QGraphicsView.ScrollHandDrag)
+                self.viewport().setCursor(Qt.ClosedHandCursor)
+                self._loupe.hide()
+                self.modeHintChanged.emit("🎨 取色暂停：空格平移中，松开回到取色")
+            else:
+                self.setDragMode(QGraphicsView.NoDrag)
+                self.viewport().setCursor(Qt.CrossCursor)
+                self._loupe.show()
+                self._loupe.raise_()
+                self.modeHintChanged.emit(
+                    "🎨 取色：左键点击颜色（Ctrl+左键连取，按住空格临时平移），右键/Esc 取消")
+            return
         if self._mode == MODE_BROWSE:
             self.setDragMode(QGraphicsView.ScrollHandDrag)
             self.viewport().setCursor(Qt.ClosedHandCursor if self._space_pan else Qt.OpenHandCursor)
@@ -315,19 +420,28 @@ class Canvas(QGraphicsView):
         self._apply_drag_and_cursor()
         super().focusOutEvent(ev)
 
+    def leaveEvent(self, ev) -> None:
+        if self._picking:
+            self._loupe.hide()
+        super().leaveEvent(ev)
+
     def wheelEvent(self, ev) -> None:
         self.zoom(1.15 if ev.angleDelta().y() > 0 else 1 / 1.15)
 
     def mousePressEvent(self, ev) -> None:
         if self._picking:
+            if self._space_pan:  # 空格平移：交给 ScrollHandDrag 处理
+                super().mousePressEvent(ev)
+                return
             if ev.button() == Qt.LeftButton:
                 sp = self.mapToScene(ev.position().toPoint())
                 rgb = self.sample_at(sp.x(), sp.y())
                 if rgb is not None:
                     self.pickPicked.emit(*rgb)
                     if not (ev.modifiers() & Qt.ControlModifier):  # Ctrl+左键连取
-                        self._picking = False
-                        self._apply_drag_and_cursor()
+                        self._end_pick()
+                    else:
+                        self._update_loupe(sp, ev.position())
                 ev.accept()
             elif ev.button() == Qt.RightButton:
                 self.cancel_pick()
@@ -365,9 +479,11 @@ class Canvas(QGraphicsView):
             ev.accept()
             return
         if self._picking:
+            if self._space_pan:
+                super().mouseMoveEvent(ev)  # 平移拖拽由基类处理
+                return
             sp = self.mapToScene(ev.position().toPoint())
-            rgb = self.sample_at(sp.x(), sp.y())
-            self.setToolTip(f"rgb{rgb}（左键取色）" if rgb else "透明像素，不可取色")
+            self._update_loupe(sp, ev.position())
             ev.accept()
             return
         super().mouseMoveEvent(ev)

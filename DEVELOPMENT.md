@@ -45,12 +45,12 @@ src/bac_count/
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
 │   ├── main_window.py (624)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
-│   ├── canvas.py (420)            # QGraphicsView 画布：缩放/平移/标注/交互/视图切换/取色模式
+│   ├── canvas.py (536)            # 画布：缩放/平移/标注/交互/视图切换/取色模式+放大镜(_LoupeWidget)
 │   ├── param_panel.py (332)       # schema→控件自动生成 + 折叠分组 + tooltip + ColorListWidget
 │   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
 │   ├── worker.py (56)             # DetectWorker(QThread) + 预处理图回传
 │   └── presets.py (26)            # 参数预设 JSON → ~/.bac_count/presets/
-tests/                             # 64 个：算法/编辑逻辑/GUI 冒烟+交互回归
+tests/                             # 65 个：算法/编辑逻辑/GUI 冒烟+交互回归
 sample/                            # 5 张真实样例（RGBA PNG ~800px，见 §6）
 ```
 
@@ -128,7 +128,10 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
   笔画状候选的圆内 95% 是培养基，直接中位会得到培养基色（踩坑 §8-16）。
 - 放在拆分前：马克笔字等异色大块先被剔掉，拆分的中位面积基准更干净。
 - UI 取色器：面板色块行 🎨 → 画布进入取色模式（左键取一个自动退出/自动开 color_on，
-  Ctrl+左键连取，右键/Esc 取消）；色块点击=移除该色；`ColorListWidget` 值永远整表替换
+  Ctrl+左键连取，右键/Esc 取消，**按住空格=临时平移**（取色暂停、放大镜隐藏））；
+  取色时光标旁跟随**圆形放大镜**（_LoupeWidget：5.3× 像素放大+十字+RGB 色卡，
+  事件驱动零定时器；WA_TransparentForMouseEvents 不挡点击；换图自动 cancel_pick）；
+  色块点击=移除该色；`ColorListWidget` 值永远整表替换
   （配合每图快照 `dict()` 浅拷贝是安全的——禁止原地 append）。
 - E0-3 实测：常规参数下 keep/drop 均 51→51 零误伤；放宽几何（min_circ=0）63→59 正确滤出 4 个墨色笔画。
 
