@@ -1,0 +1,65 @@
+# 构建 Windows 单文件 exe 并上传为 workflow artifact。
+# 两种触发方式：
+#   1) Actions 页面手动运行（workflow_dispatch）——想要就点；
+#   2) 被 release.yml 以 reusable workflow 方式调用（workflow_call）。
+name: Build EXE
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+
+      - name: Sync deps (nuitka 在 dev 组，随 uv sync 安装)
+        run: uv sync --frozen
+
+      - name: Read project version
+        id: ver
+        shell: bash
+        run: >
+          echo "v=$(uv run python -c
+          'from importlib.metadata import version; print(version("bac-count"))')"
+          >> "$GITHUB_OUTPUT"
+
+      - name: Nuitka build
+        shell: pwsh
+        env:
+          VER: ${{ steps.ver.outputs.v }}
+        run: |
+          uv run python -m nuitka src/bac_count `
+            --mode=onefile `
+            --output-dir=build `
+            --enable-plugins=pyside6 `
+            --windows-console-mode=disable `
+            --windows-icon-from-ico=assets/app.ico `
+            --include-data-dir=src/bac_count/resources=bac_count/resources `
+            --windows-file-version=$env:VER `
+            --windows-product-version=$env:VER `
+            --product-name=BacCount `
+            --file-description="Tablet Colony Counter" `
+            --assume-yes-for-downloads `
+            --remove-output
+
+      - name: Verify exe
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/bac_count.exe)) { throw "bac_count.exe 未生成" }
+          (Get-Item build/bac_count.exe).Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bac_count_windows
+          path: build/bac_count.exe

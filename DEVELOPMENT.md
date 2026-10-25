@@ -280,6 +280,10 @@ class Mine(Detector):
 ## 11. 仓库约定
 
 - git：main 直提，提交信息中文、`type: 摘要`（feat/fix/refactor/docs）；
+- CI（.github/workflows）：`main.yml`=push 跑 pytest（ubuntu/offscreen）；`build-exe.yml`=Nuitka
+  单文件 exe 构建（Actions 里可手动触发，也被 release 复用，改构建参数只动这一处）；
+  `release.yml`=推 `v*` 标签→调 build-exe→传 exe 到 GitHub Release。exe 版本号取自 pyproject
+  （importlib.metadata），图标 `assets/app.ico`（由 logo.png 补边生成，改 logo 记得重生成）。
   `*_TODO.md` 在 .gitignore（会话笔记不入库）。
 - 代码风格：core 层零 Qt、纯函数优先；UI 层信号驱动；行宽 ~110；中文注释/文案。
 - 每次功能改动必须：① 补/改测试（GUI 行为要真实事件模拟）② 跑 offscreen 全量

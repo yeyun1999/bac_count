@@ -9,34 +9,21 @@ permissions:
   contents: write
 
 jobs:
+  build:
+    uses: ./.github/workflows/build-exe.yml
+
   release:
-    runs-on: windows-latest
-
+    needs: build
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.2
+      - name: Download exe artifact
+        uses: actions/download-artifact@v4
         with:
-          enable-cache: true
-
-      - name: Install python
-        run: uv sync --frozen; uv pip install nuitka[all]
-
-      - name: Nuitka build
-        run: |
-          uv run python -m nuitka src/bac_count `
-          --mode=onefile `
-          --output-dir=build `
-          --enable-plugins=pyside6 `
-          --windows-console-mode=disable `
-          --assume-yes-for-downloads `
-          --remove-output `
-          --lto=yes
+          name: bac_count_windows
+          path: .
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            build/bac_count.exe
+          files: bac_count.exe
           generate_release_notes: true
