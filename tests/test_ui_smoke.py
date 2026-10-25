@@ -298,7 +298,8 @@ def test_param_tooltips_and_default_collapse(qtbot, tmp_path):
     _, blur_w = w.panel._widgets["blur_k"]
     assert blur_w.toolTip() == next(s for s in w._full_schema() if s.key == "blur_k").desc
     # 分组顺序 = 检测执行顺序
-    assert list(w.panel._boxes) == ["皿 ROI", "预处理", "检测算法", "粘连拆分", "后处理过滤", "手动校正"]
+    assert list(w.panel._boxes) == [
+        "皿 ROI", "预处理", "检测算法", "颜色过滤", "粘连拆分", "后处理过滤", "手动校正"]
     # 默认折叠策略：预处理/后处理过滤/手动校正收起，其余展开
     boxes = w.panel._boxes
     assert boxes["预处理"]._collapsed and boxes["后处理过滤"]._collapsed and boxes["手动校正"]._collapsed
@@ -456,3 +457,53 @@ def test_extract_image_paths(tmp_path):
             QUrl.fromLocalFile(str(sub))]
     got = extract_image_paths(urls)
     assert [p.name for p in got] == ["a.png", "c.jpg"]
+
+
+def test_color_pick_flow(qtbot, tmp_path):
+    """端到端：🎨 → 画布点击取色 → 过滤生效 → 色块删除 → 取消取色。"""
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import QSettings
+
+    img = np.zeros((300, 300, 3), np.uint8)
+    img[:, :] = (210, 235, 240)  # BGR 浅黄底
+    for x, y in [(80, 90), (150, 60), (220, 90)]:
+        cv2.circle(img, (x, y), 10, (60, 60, 210), -1)   # 红菌落
+    for x, y in [(100, 210), (200, 210)]:
+        cv2.circle(img, (x, y), 10, (60, 200, 60), -1)   # 绿菌落
+    f = tmp_path / "scene.png"
+    assert cv2.imwrite(str(f), img)
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths([f])
+    qtbot.wait(300)
+    assert len(w.last_auto) == 5
+
+    w.panel.pickRequested.emit("keep_colors")
+    assert w.canvas._picking and w.panel_pick_key == "keep_colors"
+
+    pos = w.canvas.mapFromScene(QPointF(80, 90))  # scale=1，场景=工作=原图像素
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        qtbot.mouseClick(w.canvas.viewport(), Qt.LeftButton, pos=pos)
+    assert w.params["keep_colors"] == [[210, 60, 60]]
+    assert w.params["color_on"] is True      # 取色后自动开启过滤
+    assert not w.canvas._picking             # 单击取一个即退出
+    qtbot.wait(400)
+    assert len(w.last_auto) == 3, f"应只留红色，实得 {len(w.last_auto)}"
+
+    _, widget = w.panel._widgets["keep_colors"]
+    assert widget.get_value() == [[210, 60, 60]]
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        widget._remove([210, 60, 60])
+    qtbot.wait(300)
+    assert w.params["keep_colors"] == []
+    assert len(w.last_auto) == 5
+
+    w.panel.pickRequested.emit("drop_colors")
+    assert w.canvas._picking
+    qtbot.mouseClick(w.canvas.viewport(), Qt.RightButton,
+                     pos=w.canvas.mapFromScene(QPointF(100, 210)))
+    assert not w.canvas._picking and w.params["drop_colors"] == []
+    w.close()

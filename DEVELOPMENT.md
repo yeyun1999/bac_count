@@ -34,20 +34,21 @@ src/bac_count/
 ├── core/                          # 纯逻辑层：零 Qt 依赖，可单测
 │   ├── models.py (98)             # Colony/ExclRegion/EditState/DetectionResult/ParamSpec + merge()
 │   ├── preprocess.py (106)        # load_image / make_dish_mask / prepare（预处理链）
-│   ├── pipeline.py (140)          # run_detection 总调度 + PRE/POST_SCHEMA + default_params
+│   ├── pipeline.py (170)          # run_detection 总调度 + PRE/POST_SCHEMA + default_params
 │   ├── registry.py (46)           # Detector ABC + @register 注册表 + PrepContext
 │   ├── detectors/{threshold,adaptive,blob,hough,hsv}.py   # 5 个算法，一文件一个
 │   ├── edits.py (75)              # EditHistory：增删/undo/redo（纯逻辑）
-│   ├── split.py (~120)            # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
+│   ├── split.py (119)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
+│   ├── color.py (86)              # 颜色过滤：菌落色保留/排除色剔除（color_on 开关，默认关）
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
-│   ├── main_window.py (591)       # 组装一切：状态机、调度、编辑、导出、预设
-│   ├── canvas.py (333)            # QGraphicsView 画布：缩放/平移/标注/交互/视图切换
-│   ├── param_panel.py (252)       # schema→控件自动生成 + 折叠分组 + tooltip
+│   ├── main_window.py (619)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
+│   ├── canvas.py (390)            # QGraphicsView 画布：缩放/平移/标注/交互/视图切换/取色模式
+│   ├── param_panel.py (332)       # schema→控件自动生成 + 折叠分组 + tooltip + ColorListWidget
 │   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
 │   ├── worker.py (56)             # DetectWorker(QThread) + 预处理图回传
 │   └── presets.py (26)            # 参数预设 JSON → ~/.bac_count/presets/
-tests/                             # 33 个：算法/编辑逻辑/GUI 冒烟+交互回归
+tests/                             # 49 个：算法/编辑逻辑/GUI 冒烟+交互回归
 sample/                            # 5 张真实样例（RGBA PNG ~800px，见 §6）
 ```
 
@@ -117,6 +118,18 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 - **物理极限**：中心距 < 半径（重叠 >50%）时鞍部/峰值比 >0.9 拆不动——预期行为，靠手动。
 - 样例基线：E0-3 开拆分 51→55（+4 均为真粘连对）。
 
+### 5.7 颜色过滤（color.py，默认关，pipeline 在检测后、拆分前调用）
+- 两张取色表：`keep_colors`（菌落色，非空时与所有表色 Lab 距离 > `keep_tol` 的候选去掉）、
+  `drop_colors`（培养基/墨色等，距离 < `drop_tol` 去掉）。表为空 = 该规则不生效。
+- 距离在 cv2 8bit Lab：同色深浅差 <20，红↔黑/绿 >100（已实测标定，默认 60/35 就来自这）。
+- 取色锚定：**中心像素做种子**，内切圆内只统计与种子色距 ≤45 的像素再取中位——
+  笔画状候选的圆内 95% 是培养基，直接中位会得到培养基色（踩坑 §8-16）。
+- 放在拆分前：马克笔字等异色大块先被剔掉，拆分的中位面积基准更干净。
+- UI 取色器：面板色块行 🎨 → 画布进入取色模式（左键取一个自动退出/自动开 color_on，
+  Ctrl+左键连取，右键/Esc 取消）；色块点击=移除该色；`ColorListWidget` 值永远整表替换
+  （配合每图快照 `dict()` 浅拷贝是安全的——禁止原地 append）。
+- E0-3 实测：常规参数下 keep/drop 均 51→51 零误伤；放宽几何（min_circ=0）63→59 正确滤出 4 个墨色笔画。
+
 ## 6. 样例数据与算法基线
 
 `sample/` 5 张 RGBA PNG（~800×800，皿外 alpha=0 且 **RGB 为纯黑**）：
@@ -156,8 +169,8 @@ HSV 默认 H10-40/S62-190/V85-175（由样例菌落像素分布反推：黑字 V
 - 文件列表手势约定（§8.9/8.10 的血泪）：**无修饰单击/双击/Enter = 切图**；
   Ctrl/Shift 多选不切图；右键未选中项 = 加选；右键菜单在打开瞬间快照选区并显示数量，
   目标数为 0 的菜单项置灰。当前显示图**加粗**。
-- 参数面板：按**检测执行顺序**分六组可折叠——皿 ROI → 预处理 → 检测算法（选择+算法参数同组）→
-  粘连拆分 → 后处理过滤 → 手动校正（默认收起 预处理/后处理过滤/手动校正），折叠态存 QSettings
+- 参数面板：按**检测执行顺序**分七组可折叠——皿 ROI → 预处理 → 检测算法（选择+算法参数同组）→
+  颜色过滤 → 粘连拆分 → 后处理过滤 → 手动校正（默认收起 预处理/后处理过滤/手动校正），折叠态存 QSettings
   （org/app 均为 `bac_count`，Linux 落 `~/.config/bac_count/bac_count.conf`）。
   每个参数标签和控件都有 tooltip 解释（`ParamSpec.desc`，新增参数必须写）。
 - 导出（对**全部列表图**批量，进度框可取消）：PNG→目标目录 `annotated/`；
@@ -197,6 +210,13 @@ HSV 默认 H10-40/S62-190/V85-175（由样例菌落像素分布反推：黑字 V
     否则 `menu.exec()` 阻塞测试。
 14. GUI 测试等检测完成用 `with qtbot.waitSignal(w.service.worker.done, timeout=20000)`，
     包在触发动作外面；断言前 `qtbot.wait(300)` 等 merge 落画布。
+
+**颜色采样 / 控件重建（2026-10 颜色过滤时新增）**
+15. 重建含永驻按钮的 QHBoxLayout：`while count(): takeAt(0)` 会把 🎨/✕ 一起 deleteLater。
+    异步删除构造期不炸，下次 `_rebuild()` 再引用 self._btn_clear 才崩 "already deleted"。
+    ⇒ 自己维护动态子控件列表（`self._sw_btns`），只删它们、`insertWidget(i)` 保持在前部。
+16. 笔画/细长线状候选：0.6r 内切圆几乎全是背景像素，"中位色"测出来是培养基色而不是墨色
+    （E0-3 实测距黑 130，drop 黑色完全滤不掉手写字）。⇒ 中心像素做种子色聚类（§5.7）。
 
 ## 9. 如何扩展
 

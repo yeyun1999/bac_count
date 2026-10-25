@@ -45,6 +45,8 @@ class Canvas(QGraphicsView):
     colonyClicked = Signal(object)          # Colony
     modeHintChanged = Signal(str)           # 状态栏提示（临时模式切换反馈）
     pathsDropped = Signal(list)             # 拖入图片 list[Path]
+    pickPicked = Signal(int, int, int)      # 取色模式：RGB
+    pickCancelled = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,6 +73,7 @@ class Canvas(QGraphicsView):
         self._pan_start = QPoint()
         self._space_pan = False   # 空格临时平移
         self._ctrl_held = False   # Ctrl 临时反转 添加/删除
+        self._picking = False     # 取色模式（panel 🎨 触发）
         self._build_view_bar()
 
     # ---------- 左上角视图切换条 ----------
@@ -170,7 +173,35 @@ class Canvas(QGraphicsView):
     # ---------- 模式 ----------
     def set_mode(self, mode: str) -> None:
         self._mode = mode
+        if not self._picking:
+            self._apply_drag_and_cursor()
+
+    # ---------- 取色模式 ----------
+    def enter_pick(self) -> None:
+        self._picking = True
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.viewport().setCursor(Qt.CrossCursor)
+        self.modeHintChanged.emit("🎨 取色：左键点击颜色（Ctrl+左键可连取多个），右键/Esc 取消")
+
+    def cancel_pick(self) -> None:
+        if not self._picking:
+            return
+        self._picking = False
         self._apply_drag_and_cursor()
+        self.pickCancelled.emit()
+
+    def sample_at(self, sx: float, sy: float) -> tuple[int, int, int] | None:
+        """从**原图** pixmap（非预处理视图）按场景坐标取 RGB；皿外透明像素返回 None。"""
+        pm = self._pix.pixmap()
+        if pm.isNull():
+            return None
+        img = pm.toImage()
+        x = min(max(int(round(sx)), 0), img.width() - 1)
+        y = min(max(int(round(sy)), 0), img.height() - 1)
+        col = img.pixelColor(x, y)
+        if col.alpha() < 128:
+            return None
+        return (col.red(), col.green(), col.blue())
 
     def _effective_mode(self) -> str:
         """按住 Ctrl 时 添加↔删除 临时互换；浏览模式不受影响。"""
@@ -216,6 +247,10 @@ class Canvas(QGraphicsView):
 
     # ---------- 交互 ----------
     def keyPressEvent(self, ev) -> None:
+        if self._picking and ev.key() == Qt.Key_Escape:
+            self.cancel_pick()
+            ev.accept()
+            return
         if ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
             if not self._space_pan:
                 self._space_pan = True
@@ -254,6 +289,22 @@ class Canvas(QGraphicsView):
         self.zoom(1.15 if ev.angleDelta().y() > 0 else 1 / 1.15)
 
     def mousePressEvent(self, ev) -> None:
+        if self._picking:
+            if ev.button() == Qt.LeftButton:
+                sp = self.mapToScene(ev.position().toPoint())
+                rgb = self.sample_at(sp.x(), sp.y())
+                if rgb is not None:
+                    self.pickPicked.emit(*rgb)
+                    if not (ev.modifiers() & Qt.ControlModifier):  # Ctrl+左键连取
+                        self._picking = False
+                        self._apply_drag_and_cursor()
+                ev.accept()
+            elif ev.button() == Qt.RightButton:
+                self.cancel_pick()
+                ev.accept()
+            else:
+                super().mousePressEvent(ev)
+            return
         if ev.button() == Qt.MiddleButton:
             self._panning = True
             self._pan_start = ev.position().toPoint()
@@ -281,6 +332,12 @@ class Canvas(QGraphicsView):
             self._pan_start = p
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - d.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - d.y())
+            ev.accept()
+            return
+        if self._picking:
+            sp = self.mapToScene(ev.position().toPoint())
+            rgb = self.sample_at(sp.x(), sp.y())
+            self.setToolTip(f"rgb{rgb}（左键取色）" if rgb else "透明像素，不可取色")
             ev.accept()
             return
         super().mouseMoveEvent(ev)

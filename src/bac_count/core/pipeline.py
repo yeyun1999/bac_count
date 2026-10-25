@@ -7,6 +7,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from bac_count.core.color import apply_color_filter
 from bac_count.core.models import Colony, ParamSpec
 from bac_count.core.preprocess import make_dish_mask, prepare
 from bac_count.core.registry import PrepContext, get_detector
@@ -16,7 +17,7 @@ __all__ = ["PRE_SCHEMA", "POST_SCHEMA", "run_detection", "contours_to_colonies",
 
 WORKING_MAX = 1200  # 调参/预览的工作分辨率上限（长边）
 
-# 面板分组顺序 = 检测执行顺序：皿ROI → 预处理 → 算法(+算法参数) → 拆分 → 过滤 → 手动
+# 面板分组顺序 = 检测执行顺序：皿ROI → 预处理 → 算法(+算法参数) → 颜色过滤 → 拆分 → 过滤 → 手动
 PRE_SCHEMA: list[ParamSpec] = [
     ParamSpec("rim_pct", "皿缘内缩", "float", 0.12, group="皿 ROI", min=0.0, max=0.3, step=0.01,
               desc="从皿缘向内收缩的检测禁区比例，皿缘暗环易出整圈假阳性→调大；贴边菌落被漏→调小。"
@@ -42,6 +43,20 @@ PRE_SCHEMA: list[ParamSpec] = [
 ]
 
 POST_SCHEMA: list[ParamSpec] = [
+    ParamSpec("color_on", "启用颜色过滤", "bool", False, group="颜色过滤",
+              desc="按取色器采到的颜色筛掉候选：与所有“菌落颜色”相差太远的去掉，"
+                   "与“排除颜色”相近的去掉。检测后、拆分前执行，对所有算法生效。"),
+    ParamSpec("keep_colors", "菌落颜色", "colorlist", [], group="颜色过滤",
+              desc="点“🎨”后在图上点菌落本体取色，可取多个。非空时：颜色与所有菌落色"
+                   "距离大于容差的候选被去掉。留空=不启用此规则。"),
+    ParamSpec("keep_tol", "菌落色容差", "float", 60.0, group="颜色过滤", min=10.0, max=200.0, step=5.0,
+              desc="菌落色允许的色差（Lab 距离：同色深浅≈15，红↔绿/黑>100）。"
+                   "误删真菌落→调大；假色没滤掉→调小。"),
+    ParamSpec("drop_colors", "排除颜色", "colorlist", [], group="颜色过滤",
+              desc="点“🎨”后在图上点培养基/马克笔字/气泡等取色，可取多个。"
+                   "颜色与此表任一项接近（小于容差）的候选被去掉。"),
+    ParamSpec("drop_tol", "排除色容差", "float", 35.0, group="颜色过滤", min=5.0, max=200.0, step=5.0,
+              desc="判定“同色”的阈值。黑字滤不净→调大；菌落与干扰色太接近被误删→调小。"),
     ParamSpec("split_on", "拆分粘连菌落", "bool", False, group="粘连拆分",
               desc="对面积远超典型菌落的大团做距离变换+分水岭拆分（阈值/自适应/HSV 效果好；"
                    "Blob/Hough 本身按圆找，收益小）。拆出的碎片仍受面积/圆度过滤。"),
@@ -102,11 +117,13 @@ def _post_filter(colonies: list[Colony], params: dict[str, Any], dish_mask: np.n
 
 
 def default_params(algorithm: str | None = None) -> dict[str, Any]:
-    """所有参数（预处理+过滤+指定算法）的默认值。"""
-    p = {s.key: s.default for s in PRE_SCHEMA + POST_SCHEMA}
+    """所有参数（预处理+过滤+指定算法）的默认值。列表默认值逐个拷贝，防跨图共享。"""
+    p = {s.key: (list(s.default) if isinstance(s.default, list) else s.default)
+         for s in PRE_SCHEMA + POST_SCHEMA}
     if algorithm:
         p["algorithm"] = algorithm
-    p.update({s.key: s.default for s in get_detector(p["algorithm"]).schema()})
+    p.update({s.key: (list(s.default) if isinstance(s.default, list) else s.default)
+              for s in get_detector(p["algorithm"]).schema()})
     return p
 
 
@@ -134,7 +151,8 @@ def run_detection(
 
     det = get_detector(params.get("algorithm", "adaptive"))
     raw = det.detect(ctx, params)
-    raw = split_merged(ctx, raw, params)  # ① 粘连拆分（split_on 关闭时原样返回）
+    raw = apply_color_filter(ctx, raw, params)  # ① 颜色过滤（先剔除异色大块，拆分基准更干净）
+    raw = split_merged(ctx, raw, params)  # ② 粘连拆分（split_on 关闭时原样返回）
 
     # 面积参数按原图 px² 定义 → 换算到工作尺度
     p = dict(params)

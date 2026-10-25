@@ -60,6 +60,8 @@ class MainWindow(QMainWindow):
         self.canvas.colonyClicked.connect(self._on_remove_click)
         self.canvas.modeHintChanged.connect(self._update_mode_hint)
         self.canvas.pathsDropped.connect(lambda ps: self.load_paths(ps, append=True))
+        self.canvas.pickPicked.connect(self._on_pick)
+        self.panel_pick_key: str | None = None
 
         self.file_list = FileList(self)
         self.file_list.pathsDropped.connect(lambda ps: self.load_paths(ps, append=True))
@@ -78,6 +80,7 @@ class MainWindow(QMainWindow):
 
         self.panel = ParamPanel(self, settings=settings)
         self.panel.valueChanged.connect(self._on_param_changed)
+        self.panel.pickRequested.connect(self._start_pick)
         dock = QDockWidget("检测参数", self)
         dock.setObjectName("param_dock")
         dock.setWidget(self.panel)
@@ -168,6 +171,7 @@ class MainWindow(QMainWindow):
         act("放大", lambda: self.canvas.zoom(1.25), QKeySequence.ZoomIn, button=False)
         act("缩小", lambda: self.canvas.zoom(1 / 1.25), QKeySequence.ZoomOut, button=False)
         act("适应窗口", self.canvas.fit_view, "0", button=False)
+        act("取消取色", self.canvas.cancel_pick, "Escape", button=False)
 
         # 工具栏按钮不抢焦点，保证空格/Ctrl 直达画布
         for btn in tb.findChildren(QToolButton):
@@ -372,6 +376,29 @@ class MainWindow(QMainWindow):
 
     def _set_mode(self, mode: str) -> None:
         self.canvas.set_mode(mode)
+
+    # ------------------------------------------------------------------ 取色
+    def _start_pick(self, key: str) -> None:
+        if self.bgr is None:
+            self.statusBar().showMessage("⚠ 取色需要先打开图片", 4000)
+            return
+        self.panel_pick_key = key
+        self.canvas.enter_pick()
+
+    def _on_pick(self, r: int, g: int, b: int) -> None:
+        key = self.panel_pick_key
+        if not key:
+            return
+        cur = list(self.params.get(key) or [])
+        cur.append([int(r), int(g), int(b)])
+        self.params[key] = cur
+        self.panel.set_values({key: cur})
+        self._commit_params()
+        if not self.params.get("color_on"):
+            self.params["color_on"] = True
+            self.panel.set_values({"color_on": True})
+            self.statusBar().showMessage("已自动开启颜色过滤", 4000)
+        self._debounce.start()
 
     # ------------------------------------------------------------------ 参数面板
     def _full_schema(self):

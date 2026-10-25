@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -82,6 +83,75 @@ class _SliderRow(QWidget):
         self.spin.setValue(val)
         self.slider.setValue(int(round(float(val) * self.factor)))
         self.blockSignals(False)
+
+
+class ColorListWidget(QWidget):
+    """颜色列表：色块（点击移除）+ 🎨 取色 + ✕ 清空。值始终为整表替换的新列表。"""
+
+    valueChanged = Signal(object)   # list[[r,g,b]]
+    pickRequested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._colors: list = []
+        self._sw_btns: list[QToolButton] = []
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        self._swatches = lay
+        self._btn_pick = QToolButton()
+        self._btn_pick.setText("🎨")
+        self._btn_pick.setToolTip("点击后在图上取色加入本列表")
+        self._btn_pick.clicked.connect(self.pickRequested.emit)
+        lay.addWidget(self._btn_pick)
+        self._btn_clear = QToolButton()
+        self._btn_clear.setText("✕")
+        self._btn_clear.setToolTip("清空列表")
+        self._btn_clear.clicked.connect(self._clear)
+        lay.addWidget(self._btn_clear)
+        lay.addStretch(1)
+        self._rebuild()
+
+    def get_value(self) -> list:
+        return self._colors
+
+    def set_colors(self, colors) -> None:
+        """外部程序化设置（不触发 valueChanged）。"""
+        self._colors = [list(c) for c in (colors or [])]
+        self._rebuild()
+
+    def _clear(self) -> None:
+        self._colors = []
+        self._rebuild()
+        self.valueChanged.emit([])
+
+    def _remove(self, color: list) -> None:
+        out, hit = [], False
+        for c in self._colors:
+            if not hit and list(c) == list(color):
+                hit = True
+                continue
+            out.append(c)
+        self._colors = out
+        self._rebuild()
+        self.valueChanged.emit(self._colors)
+
+    def _rebuild(self) -> None:
+        for b in self._sw_btns:
+            self._swatches.removeWidget(b)
+            b.deleteLater()
+        self._sw_btns = []
+        for i, c in enumerate(self._colors):
+            b = QToolButton()
+            b.setFixedSize(20, 20)
+            b.setStyleSheet(
+                f"background:rgb({c[0]},{c[1]},{c[2]}); border:1px solid #888; border-radius:3px;")
+            b.setToolTip(f"rgb({c[0]},{c[1]},{c[2]})  点击移除")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, col=list(c): self._remove(col))
+            self._swatches.insertWidget(i, b)
+            self._sw_btns.append(b)
+        self._btn_clear.setVisible(bool(self._colors))
 
 
 class _HeaderWidget(QWidget):
@@ -154,6 +224,7 @@ class CollapsibleBox(QWidget):
 
 class ParamPanel(QScrollArea):
     valueChanged = Signal(str, object)  # key, value
+    pickRequested = Signal(str)         # colorlist 参数的 🎨 被点击 → 请求图上取色
 
     def __init__(self, parent=None, settings: QSettings | None = None):
         super().__init__(parent)
@@ -216,6 +287,11 @@ class ParamPanel(QScrollArea):
             w.addItems(spec.choices or [])
             w.setCurrentText(str(val))
             w.currentTextChanged.connect(lambda text, k=spec.key: self._emit(k, text))
+        elif spec.kind == "colorlist":
+            w = ColorListWidget()
+            w.set_colors(val)
+            w.valueChanged.connect(lambda v, k=spec.key: self._emit(k, v))
+            w.pickRequested.connect(lambda k=spec.key: self.pickRequested.emit(k))
         else:
             w = _SliderRow(spec)
             w.set_value(val)
@@ -233,6 +309,8 @@ class ParamPanel(QScrollArea):
                 out[key] = w.isChecked()
             elif spec.kind == "combo":
                 out[key] = w.currentText()
+            elif spec.kind == "colorlist":
+                out[key] = w.get_value()
             else:
                 out[key] = w.value()
         return out
@@ -247,6 +325,8 @@ class ParamPanel(QScrollArea):
                 w.setChecked(bool(val))
             elif isinstance(w, QComboBox):
                 w.setCurrentText(str(val))
+            elif isinstance(w, ColorListWidget):
+                w.set_colors(val)
             else:
                 w.set_value(val)
         self._loading = False
