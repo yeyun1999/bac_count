@@ -25,6 +25,10 @@ _MIN_SUB_AREA_RATIO = 0.15  # 子区域面积至少占原候选的比例，滤�
 _FRAG_COLOR_MAX = 45.0      # 碎片颜色判定阈值（Lab）：与候选本体或任一兄弟碎片色距内即通过
                             # （兄弟规则救"半透明菌落重叠区更深"的误伤，用户 E0-1 实测）
 _FRAG_OVERLAP_MIN = 0.5     # 碎片像素须有 ≥50% 落在原候选的连通轮廓内（拒绝 crop 混入的邻接异物）
+_FRAG_ASPECT_MAX = 2.6      # 碎片形状：真拆出的菌落半块实测长宽比 ≤1.8；
+_FRAG_FILL_MIN = 0.35       # 笔画交叉的"长条臂"外接圆巨大而面积小（fill≈0.3、asp≥3.7），
+                            # 且与笔画同色同连通域——颜色/重叠校验都拦不住（用户 E0-1 二图实报），
+                            # 还会因外接圆包含邻近真菌落被 dedup 吞掉（"1 处消失"根因）
 _FILL_TRIGGER = 0.88        # 外接圆填充率低于此值 → 花生形，粘连嫌疑（单圆≈0.92）
 _AREA_TRIGGER2 = 1.25       # 配合填充率的次级触发面积倍数（主触发 = split_factor）
 
@@ -134,13 +138,18 @@ def _split_one(ctx, binary, dt, c: Colony, params) -> list[Colony] | None:
         aspect = max(rw, rh) / min(rw, rh) if min(rw, rh) > 0.5 else 99.0
         frag = Colony(x=cx + x0, y=cy + y0, r=r, area=area, circularity=circ, aspect=aspect)
         lab = median_lab_at(ctx.bgr, frag.x, frag.y, frag.r)
-        # ① 重叠校验：碎片像素必须大多落在原候选连通轮廓内
+        # ① 形状校验：碎片必须像菌落（长条臂=笔画交叉产物，reject）
+        if params.get("split_shape", True):
+            fill = area / (np.pi * r * r) if r > 0 else 1.0
+            if aspect > _FRAG_ASPECT_MAX or fill < _FRAG_FILL_MIN:
+                continue
+        # ② 重叠校验：碎片像素必须大多落在原候选连通轮廓内
         if params.get("split_overlap", True) and comp_id > 0:
             npix = int(region.sum())
             if npix == 0 or int((region & orig_comp).sum()) / npix < _FRAG_OVERLAP_MIN:
                 continue
         frags.append((frag, lab))
-    # ② 颜色校验：与候选本体或任一兄弟碎片同色即通过
+    # ③ 颜色校验：与候选本体或任一兄弟碎片同色即通过
     #    （兄弟规则：半透明菌落重叠区颜色更深，种子色≠菌落本色，只看种子会全军覆没）
     if params.get("split_color", True) and len(frags) >= 2 and cand_lab is not None:
         def close(a, b):

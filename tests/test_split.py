@@ -180,3 +180,39 @@ def test_split_stray_rejected_by_overlap_toggle():
 def test_split_guard_toggles_default_on():
     p = default_params("adaptive")
     assert p["split_overlap"] is True and p["split_color"] is True
+
+
+def test_split_arms_rejected_by_shape_gate():
+    """同色同连通域的长条臂碎片（笔画交叉类，用户 E0-1 位置2）：只有形状校验能拦。
+
+    两根 14×45 棕色条经 6×4 细桥连通：峰值可分（桥 dt<阈值）、同色（颜色校验过）、
+    同域（重叠校验过）——开形状校验必须拒绝（asp 3.2>2.6），关掉则复现旧假阳性。
+    """
+    import cv2
+
+    from bac_count.core.models import Colony
+    from bac_count.core.registry import PrepContext
+    from bac_count.core.split import _split_one
+
+    BROWN = (150, 120, 95)
+    bgr = np.zeros((300, 300, 3), np.uint8)
+    bgr[:, :] = (215, 195, 170)
+    mask = np.zeros((300, 300), np.uint8)
+    for rect in [((120, 143), (134, 188)), ((137, 143), (151, 188)), ((133, 163), (139, 167))]:
+        cv2.rectangle(bgr, rect[0], rect[1], BROWN, -1)
+        cv2.rectangle(mask, rect[0], rect[1], 255, -1)
+    dt = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+    ctx = PrepContext(bgr=bgr, gray=cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY),
+                      dish_mask=None, alpha=None)
+    cand = Colony(x=135, y=165, r=24, area=1250)
+    p = default_params("adaptive")
+    p["split_on"] = True
+
+    subs_on = _split_one(ctx, mask, dt, cand, p)
+    assert subs_on is None, f"形状校验失效，长条臂被当成菌落：{[(round(c.x), round(c.y), round(c.aspect, 1)) for c in (subs_on or [])]}"
+    subs_off = _split_one(ctx, mask, dt, cand, dict(p, split_shape=False))
+    assert subs_off is not None and len(subs_off) == 2, "关闭形状校验应回到旧行为（两根长条混入），证明开关生效"
+
+
+def test_split_shape_toggle_default_on():
+    assert default_params("adaptive")["split_shape"] is True

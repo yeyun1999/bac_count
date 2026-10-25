@@ -38,7 +38,7 @@ src/bac_count/
 │   ├── registry.py (46)           # Detector ABC + @register 注册表 + PrepContext
 │   ├── detectors/{threshold,adaptive,blob,hough,hsv}.py   # 5 个算法，一文件一个
 │   ├── edits.py (75)              # EditHistory：增删/undo/redo（纯逻辑）
-│   ├── split.py (119)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
+│   ├── split.py (150)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
 │   ├── color.py (86)              # 颜色过滤：菌落色保留/排除色剔除（color_on 开关，默认关）
 │   ├── dedup.py (48)              # 重叠/包含去重：交集占小圆比例阈值（默认开）
 │   ├── imio.py (36)              # Unicode 路径安全读写（imread_any/imwrite_any，绕 Windows 代码页坑）
@@ -115,7 +115,11 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 - 触发（工作坐标）：`area ≥ 中位面积×split_factor`，**或** `area ≥ 1.25×中位 且 外接圆填充率<0.88`
   （花生形兜底——重叠越狠并集面积反而越小，只靠面积倍数会漏半重叠对）。
 - 通用二值图由 adaptiveThreshold 生成（复用面板上的 block/C），与所选算法无关 → 5 种算法统一受益。
-  **注意它是色盲的（含马克笔笔画）且 crop 会混入邻接异物**，故碎片有两道校验（各带开关，默认开）：
+  **注意它是色盲的（含马克笔笔画）且 crop 会混入邻接异物**，故碎片有三道校验（各带开关，默认开）：
+- **形状校验**（`split_shape`，长宽比≤2.6 且外接圆填充率≥0.35）：笔画交叉拆出的"长条臂"
+  与笔画**同色、同连通域**——颜色/重叠校验都拦不住（用户 E0-1 位置2 实报，关校验无效即铁证）；
+  它面积小能过 max_area 但外接圆巨大，画出来是个离谱大圈，还会在去重阶段**吞掉邻近真菌落**
+  （位置1 消失的根因：dedup 判包含→保大→删真）。真拆分半块实测 asp≤1.8，安全。
 - **重叠校验**（`split_overlap`）：碎片像素 ≥50% 须落在原候选的**连通域**内
   （connectedComponents 取候选中心所在域），拒绝 crop 混入的独立笔画/杂质碎片。
 - **颜色校验**（`split_color`）：碎片须与候选本体种子色**或任一兄弟碎片** Lab 距离 ≤45。
