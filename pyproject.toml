@@ -1,6 +1,6 @@
 [project]
 name = "bac-count"
-version = "1.0.1"
+version = "1.0.2"
 description = "平板菌落计数 GUI：PySide6 + OpenCV，5 种检测算法 + 取色过滤/粘连拆分/重叠去重 + 手动校正"
 readme = "README.md"
 authors = [
