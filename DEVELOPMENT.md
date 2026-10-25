@@ -279,7 +279,7 @@ class Mine(Detector):
 
 ## 11. 仓库约定
 
-- git：master 直提，提交信息中文、`type: 摘要`（feat/fix/refactor/docs）；
+- git：main 直提，提交信息中文、`type: 摘要`（feat/fix/refactor/docs）；
   `*_TODO.md` 在 .gitignore（会话笔记不入库）。
 - 代码风格：core 层零 Qt、纯函数优先；UI 层信号驱动；行宽 ~110；中文注释/文案。
 - 每次功能改动必须：① 补/改测试（GUI 行为要真实事件模拟）② 跑 offscreen 全量
