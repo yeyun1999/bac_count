@@ -41,7 +41,7 @@ src/bac_count/
 │   ├── split.py (119)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
 │   ├── color.py (86)              # 颜色过滤：菌落色保留/排除色剔除（color_on 开关，默认关）
 │   ├── dedup.py (48)              # 重叠/包含去重：交集占小圆比例阈值（默认开）
-│   ├── imio.py (38)              # Unicode 路径安全读写（imread_any/imwrite_any，绕 Windows 代码页坑）
+│   ├── imio.py (36)              # Unicode 路径安全读写（imread_any/imwrite_any，绕 Windows 代码页坑）
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
 │   ├── main_window.py (624)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
