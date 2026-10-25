@@ -564,3 +564,36 @@ def test_pick_space_pan_and_loupe(qtbot, tmp_path):
     assert not c._picking and not c._loupe.isVisible()
     assert w.params["keep_colors"] == [[210, 60, 60]]
     w.close()
+
+
+def test_pick_focus_from_panel_button(qtbot, tmp_path):
+    """真实链路回归：点面板 🎨 后画布必须拿到键盘焦点，空格立刻可临时平移。"""
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QGraphicsView
+
+    img = np.zeros((300, 300, 3), np.uint8)
+    img[:, :] = (210, 235, 240)
+    cv2.circle(img, (80, 90), 10, (60, 60, 210), -1)
+    f = tmp_path / "scene.png"
+    assert cv2.imwrite(str(f), img)
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    w.show()
+    qtbot.waitExposed(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths([f])
+    qtbot.wait(200)
+    _, widget = w.panel._widgets["keep_colors"]
+    qtbot.mouseClick(widget._btn_pick, Qt.LeftButton)  # 真实点击：焦点原本会被按钮抢走
+    assert w.canvas._picking
+    assert w.canvas.hasFocus(), "进入取色后画布应拿到键盘焦点（空格直达画布）"
+    qtbot.keyPress(w.canvas, Qt.Key_Space)
+    assert w.canvas.dragMode() == QGraphicsView.ScrollHandDrag
+    n0 = len(w.params["keep_colors"])
+    qtbot.mouseClick(w.canvas.viewport(), Qt.LeftButton,
+                     pos=w.canvas.mapFromScene(QPointF(80, 90)))
+    assert len(w.params["keep_colors"]) == n0, "空格平移期间不应取色"
+    w.close()

@@ -277,6 +277,7 @@ class Canvas(QGraphicsView):
         pm = self._pix.pixmap()
         self._pick_img = None if pm.isNull() else pm.toImage()
         self._picking = True
+        self.setFocus()  # 🎨 按钮点击会把焦点留在面板，空格/Ctrl/Esc 必须直达画布
         self._apply_drag_and_cursor()
         self._loupe.show()
         self._loupe.raise_()
@@ -317,12 +318,12 @@ class Canvas(QGraphicsView):
             self._loupe.show()
             self._loupe.raise_()
         vw, vh = self.viewport().width(), self.viewport().height()
-        x = int(vp_pos.x()) + 20
-        y = int(vp_pos.y()) + 16
+        x = int(vp_pos.x()) + 12
+        y = int(vp_pos.y()) + 10
         if x + self._loupe.width() > vw:
-            x = int(vp_pos.x()) - 20 - self._loupe.width()
+            x = int(vp_pos.x()) - 12 - self._loupe.width()
         if y + self._loupe.height() > vh:
-            y = int(vp_pos.y()) - 16 - self._loupe.height()
+            y = int(vp_pos.y()) - 10 - self._loupe.height()
         self._loupe.move(max(0, x), max(0, y))
 
     def _effective_mode(self) -> str:

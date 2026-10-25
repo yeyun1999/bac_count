@@ -251,6 +251,11 @@ HSV 取色窗口非对称（S 向高饱和放满、向培养基只放一半，V 
     GBK 误解码（课题→璇鹃）→ 用户真实数据目录直接读不出（v1.0.0 exe 实报）。
     ⇒ 一律走 `core/imio.py`：Python `read_bytes`（宽字符 API）+ `cv2.imdecode`，
     写侧 `cv2.imencode` + `write_bytes`。CSV/JSON/预设本来就走 Python IO，不受影响。
+20. **面板按钮抢键盘焦点 → 画布快捷键全哑**：点 🎨 后焦点停在按钮上，空格/Ctrl/Esc
+    发给按钮而非画布（用户实测：取色中空格不平移，"Ctrl 取色后再按空格才生效"——因为
+    点击画布才把焦点带回来）。⇒ `enter_pick()` 里 `setFocus()` + ColorListWidget 全部
+    按钮 `NoFocus`。**QTest.keyPress(widget) 直接发给指定 widget、绕过焦点路由，这种 bug
+    行为测试测不出**——要断言 `canvas.hasFocus()`（需 w.show()+waitExposed）。
 
 ## 9. 如何扩展
 

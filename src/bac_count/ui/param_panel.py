@@ -101,11 +101,13 @@ class ColorListWidget(QWidget):
         self._swatches = lay
         self._btn_pick = QToolButton()
         self._btn_pick.setText("🎨")
+        self._btn_pick.setFocusPolicy(Qt.NoFocus)  # 不抢画布焦点（空格/Ctrl 直达画布）
         self._btn_pick.setToolTip("点击后在图上取色加入本列表")
         self._btn_pick.clicked.connect(self.pickRequested.emit)
         lay.addWidget(self._btn_pick)
         self._btn_clear = QToolButton()
         self._btn_clear.setText("✕")
+        self._btn_clear.setFocusPolicy(Qt.NoFocus)
         self._btn_clear.setToolTip("清空列表")
         self._btn_clear.clicked.connect(self._clear)
         lay.addWidget(self._btn_clear)
@@ -148,6 +150,7 @@ class ColorListWidget(QWidget):
                 f"background:rgb({c[0]},{c[1]},{c[2]}); border:1px solid #888; border-radius:3px;")
             b.setToolTip(f"rgb({c[0]},{c[1]},{c[2]})  点击移除")
             b.setCursor(Qt.PointingHandCursor)
+            b.setFocusPolicy(Qt.NoFocus)
             b.clicked.connect(lambda _=False, col=list(c): self._remove(col))
             self._swatches.insertWidget(i, b)
             self._sw_btns.append(b)
