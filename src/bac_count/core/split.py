@@ -22,9 +22,9 @@ __all__ = ["split_merged"]
 _PEAK_SEARCH_TOP = 0.9    # 阈值搜索上限（更高比例对噪声双峰过于宽容）
 _PEAK_SEARCH_STEP = 0.05
 _MIN_SUB_AREA_RATIO = 0.15  # 子区域面积至少占原候选的比例，滤掉分水岭碎屑
-_FRAG_COLOR_MAX = 45.0      # 碎片与候选本体的 Lab 色距上限：拆分的内部二值图是"色盲"
-                            # 的 adaptive 阈值（含马克笔笔画灰晕），异色碎片必须拒绝，
-                            # 否则笔画粗段会被拆成矮胖假菌落（用户 E0-1 实测踩坑）
+_FRAG_COLOR_MAX = 45.0      # 碎片颜色判定阈值（Lab）：与候选本体或任一兄弟碎片色距内即通过
+                            # （兄弟规则救"半透明菌落重叠区更深"的误伤，用户 E0-1 实测）
+_FRAG_OVERLAP_MIN = 0.5     # 碎片像素须有 ≥50% 落在原候选的连通轮廓内（拒绝 crop 混入的邻接异物）
 _FILL_TRIGGER = 0.88        # 外接圆填充率低于此值 → 花生形，粘连嫌疑（单圆≈0.92）
 _AREA_TRIGGER2 = 1.25       # 配合填充率的次级触发面积倍数（主触发 = split_factor）
 
@@ -101,12 +101,25 @@ def _split_one(ctx, binary, dt, c: Colony, params) -> list[Colony] | None:
         cv2.watershed(img, markers)
     except cv2.error:
         return None
-    subs: list[Colony] = []
-    min_sub = c.area * _MIN_SUB_AREA_RATIO
+    # 原候选的连通轮廓：crop 二值图中包含候选中心的那个连通域
+    # （拆分的二值图是色盲 adaptive 阈值，crop 里可能混入不相邻的笔画/杂质）
+    n_cc, cc_labels = cv2.connectedComponents(crop_b, connectivity=8)
+    ci = min(max(int(c.y) - y0, 0), crop_b.shape[0] - 1)
+    cj = min(max(int(c.x) - x0, 0), crop_b.shape[1] - 1)
+    comp_id = cc_labels[ci, cj]
+    if comp_id == 0:  # 中心恰好不在前景：退化为 crop 内最大连通域
+        if n_cc > 1:
+            sizes = np.bincount(cc_labels.ravel())
+            comp_id = int(np.argmax(sizes[1:]) + 1)
+    orig_comp = (cc_labels == comp_id) if comp_id > 0 else np.zeros_like(crop_b, bool)
+
     cand_lab = median_lab_at(ctx.bgr, c.x, c.y, c.r)  # 候选本体参考色（中心种子聚类）
+    frags: list[tuple[Colony, np.ndarray | None]] = []
+    min_sub = c.area * _MIN_SUB_AREA_RATIO
     for new in remap.values():
-        region = ((markers == new) & (crop_b > 0)).astype(np.uint8) * 255
-        cs, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        region = ((markers == new) & (crop_b > 0))
+        region_u8 = region.astype(np.uint8) * 255
+        cs, _ = cv2.findContours(region_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not cs:
             continue
         cnt = max(cs, key=cv2.contourArea)
@@ -114,16 +127,26 @@ def _split_one(ctx, binary, dt, c: Colony, params) -> list[Colony] | None:
         if area < min_sub:
             continue
         (cx, cy), r = cv2.minEnclosingCircle(cnt)
-        if cand_lab is not None:
-            # cx/cy 是裁剪局部坐标，采样必须回到全图坐标（+x0/+y0）
-            frag_lab = median_lab_at(ctx.bgr, cx + x0, cy + y0, r)
-            if frag_lab is not None and float(np.linalg.norm(frag_lab - cand_lab)) > _FRAG_COLOR_MAX:
-                continue  # 与候选本体异色（笔画/杂质），不算菌落
         per = cv2.arcLength(cnt, True)
         circ = 4 * np.pi * area / (per * per) if per > 0 else 0.0
         rect = cv2.minAreaRect(cnt)
         rw, rh = rect[1]
         aspect = max(rw, rh) / min(rw, rh) if min(rw, rh) > 0.5 else 99.0
-        subs.append(Colony(x=cx + x0, y=cy + y0, r=r, area=area,
-                           circularity=circ, aspect=aspect))
-    return subs if len(subs) >= 2 else None
+        frag = Colony(x=cx + x0, y=cy + y0, r=r, area=area, circularity=circ, aspect=aspect)
+        lab = median_lab_at(ctx.bgr, frag.x, frag.y, frag.r)
+        # ① 重叠校验：碎片像素必须大多落在原候选连通轮廓内
+        if params.get("split_overlap", True) and comp_id > 0:
+            npix = int(region.sum())
+            if npix == 0 or int((region & orig_comp).sum()) / npix < _FRAG_OVERLAP_MIN:
+                continue
+        frags.append((frag, lab))
+    # ② 颜色校验：与候选本体或任一兄弟碎片同色即通过
+    #    （兄弟规则：半透明菌落重叠区颜色更深，种子色≠菌落本色，只看种子会全军覆没）
+    if params.get("split_color", True) and len(frags) >= 2 and cand_lab is not None:
+        def close(a, b):
+            return a is not None and b is not None and float(np.linalg.norm(a - b)) <= _FRAG_COLOR_MAX
+        frags = [(f, lab) for i, (f, lab) in enumerate(frags)
+                 if close(lab, cand_lab) or any(j != i and close(lab, l2)
+                                                for j, (_, l2) in enumerate(frags))]
+    result = [f for f, _ in frags]
+    return result if len(result) >= 2 else None
