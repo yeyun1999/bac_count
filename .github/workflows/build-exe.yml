@@ -43,7 +43,7 @@ jobs:
             --output-dir=build `
             --enable-plugins=pyside6 `
             --windows-console-mode=disable `
-            --windows-icon-from-ico=assets/app.ico `
+            --windows-icon-from-ico=src\bac_count\resources\logo.png `
             --include-data-dir=src/bac_count/resources=bac_count/resources `
             --windows-file-version=$env:VER `
             --windows-product-version=$env:VER `
