@@ -7,6 +7,7 @@ import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QGraphicsEllipseItem,
     QGraphicsPixmapItem,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 from bac_count.core.models import Colony
 
 MODE_BROWSE, MODE_ADD, MODE_REMOVE = "browse", "add", "remove"
-VIEW_ORIG, VIEW_PREP, VIEW_MARK = "orig", "prep", "mark"
+VIEW_ORIG, VIEW_PREP = "orig", "prep"
 
 PEN_AUTO = QColor(0, 230, 0)
 PEN_MANUAL = QColor(0, 160, 255)
@@ -67,7 +68,8 @@ class Canvas(QGraphicsView):
         self._colonies: list[Colony] = []
         self._scale = 1.0  # 场景(工作图) = 原图 * scale
         self._mode = MODE_BROWSE
-        self._view_mode = VIEW_MARK
+        self._view_mode = VIEW_ORIG
+        self._show_marks = True   # 标记叠加（菌落圈/编号）显隐，独立于视图选择
         self._hover: Colony | None = None
         self._panning = False
         self._pan_start = QPoint()
@@ -76,7 +78,7 @@ class Canvas(QGraphicsView):
         self._picking = False     # 取色模式（panel 🎨 触发）
         self._build_view_bar()
 
-    # ---------- 左上角视图切换条 ----------
+    # ---------- 左上视图切换条 / 右上标记开关 ----------
     def _build_view_bar(self) -> None:
         bar = QFrame(self)
         bar.setObjectName("viewBar")
@@ -90,7 +92,7 @@ class Canvas(QGraphicsView):
         lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(2)
         self._view_btns: dict[str, QToolButton] = {}
-        for label, mode in (("原图", VIEW_ORIG), ("预处理", VIEW_PREP), ("标记", VIEW_MARK)):
+        for label, mode in (("原图", VIEW_ORIG), ("预处理", VIEW_PREP)):
             b = QToolButton(bar)
             b.setText(label)
             b.setCheckable(True)
@@ -102,6 +104,30 @@ class Canvas(QGraphicsView):
         bar.move(6, 6)
         bar.raise_()
         self._view_bar = bar
+
+        mbar = QFrame(self)
+        mbar.setObjectName("marksBar")
+        mbar.setStyleSheet(
+            "#marksBar{background:rgba(40,42,46,200); border-radius:6px;}"
+            "QCheckBox{color:#ddd; spacing:5px;}"
+        )
+        play = QHBoxLayout(mbar)
+        play.setContentsMargins(8, 4, 8, 4)
+        self._chk_marks = QCheckBox("显示标记", mbar)
+        self._chk_marks.setChecked(self._show_marks)
+        self._chk_marks.setCursor(Qt.PointingHandCursor)
+        self._chk_marks.setToolTip("菌落圆圈/编号叠加的显隐（原图与预处理视图通用）")
+        self._chk_marks.toggled.connect(self.set_show_marks)
+        play.addWidget(self._chk_marks)
+        mbar.adjustSize()
+        self._marks_bar = mbar
+        self._reposition_floats()
+
+    def _reposition_floats(self) -> None:
+        self._view_bar.move(6, 6)
+        self._marks_bar.move(self.width() - self._marks_bar.width() - 6, 6)
+        self._view_bar.raise_()
+        self._marks_bar.raise_()
 
     # ---------- 图像与标注 ----------
     def set_image(self, pixmap) -> None:
@@ -130,9 +156,14 @@ class Canvas(QGraphicsView):
         has_prep = not self._prep_pix.pixmap().isNull()
         prep_on = self._view_mode == VIEW_PREP and has_prep
         self._prep_pix.setVisible(prep_on)
-        self._pix.setVisible(self._view_mode != VIEW_PREP or not has_prep)
+        self._pix.setVisible(not prep_on)  # 无预处理图时回退原图
         for item in self._overlay:
-            item.setVisible(self._view_mode == VIEW_MARK)
+            item.setVisible(self._show_marks)
+
+    def set_show_marks(self, on: bool) -> None:
+        self._show_marks = bool(on)
+        for item in self._overlay:
+            item.setVisible(self._show_marks)
 
     def clear_image(self) -> None:
         self.set_image(bgra_to_qpixmap(np.zeros((10, 10, 3), np.uint8), None))
@@ -158,7 +189,7 @@ class Canvas(QGraphicsView):
             el = QGraphicsEllipseItem(QRectF(c.x * s - r, c.y * s - r, 2 * r, 2 * r))
             el.setPen(pen)
             el.setZValue(10)
-            el.setVisible(self._view_mode == VIEW_MARK)
+            el.setVisible(self._show_marks)
             self._scene.addItem(el)
             self._overlay.append(el)
             txt = QGraphicsSimpleTextItem(str(c.id))
@@ -166,7 +197,7 @@ class Canvas(QGraphicsView):
             txt.setBrush(pen.color())
             txt.setPos(c.x * s + r + 1, c.y * s - r - 1)
             txt.setZValue(11)
-            txt.setVisible(self._view_mode == VIEW_MARK)
+            txt.setVisible(self._show_marks)
             self._scene.addItem(txt)
             self._overlay.append(txt)
 
@@ -242,8 +273,7 @@ class Canvas(QGraphicsView):
 
     def resizeEvent(self, ev) -> None:
         super().resizeEvent(ev)
-        self._view_bar.move(6, 6)
-        self._view_bar.raise_()
+        self._reposition_floats()
 
     # ---------- 交互 ----------
     def keyPressEvent(self, ev) -> None:

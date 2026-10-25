@@ -364,8 +364,8 @@ def test_export_batch(qtbot, monkeypatch, tmp_path):
     w.close()
 
 
-def test_view_modes(qtbot):
-    from bac_count.ui.canvas import VIEW_MARK, VIEW_ORIG, VIEW_PREP
+def test_view_modes_and_marks_toggle(qtbot):
+    from bac_count.ui.canvas import VIEW_ORIG, VIEW_PREP
 
     files = sorted(SAMPLE_DIR.glob("*.png"))
     w = MainWindow()
@@ -375,17 +375,27 @@ def test_view_modes(qtbot):
     qtbot.wait(600)
     c = w.canvas
     assert not c._prep_pix.pixmap().isNull(), "检测后应有预处理图"
-    assert c._view_mode == VIEW_MARK
+    assert c._view_mode == VIEW_ORIG and c._show_marks
     assert c._pix.isVisible() and not c._prep_pix.isVisible()
     assert c._overlay and all(it.isVisible() for it in c._overlay)
-    c.set_view_mode(VIEW_ORIG)
-    assert c._pix.isVisible() and not c._prep_pix.isVisible()
+    # 原图视图关标记 → 只剩干净原图
+    c._chk_marks.setChecked(False)
     assert all(not it.isVisible() for it in c._overlay)
+    assert c._pix.isVisible()
+    # 预处理视图 + 标记开：灰度产物与菌落圈同时可见
+    c._chk_marks.setChecked(True)
     c.set_view_mode(VIEW_PREP)
     assert c._prep_pix.isVisible() and not c._pix.isVisible()
-    c.set_view_mode(VIEW_MARK)
+    assert c._overlay and all(it.isVisible() for it in c._overlay)
+    # 预处理视图也能独立关标记
+    c._chk_marks.setChecked(False)
+    assert all(not it.isVisible() for it in c._overlay)
+    assert c._prep_pix.isVisible()
+    # 无预处理图时，预处理视图回退显示原图
+    c._chk_marks.setChecked(True)
+    c.set_prep_image(None)
     assert c._pix.isVisible() and not c._prep_pix.isVisible()
-    assert c._view_btns[VIEW_MARK].isChecked()
+    c.set_view_mode(VIEW_ORIG)
     w.close()
 
 

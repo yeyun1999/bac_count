@@ -43,7 +43,7 @@ src/bac_count/
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
 │   ├── main_window.py (619)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
-│   ├── canvas.py (390)            # QGraphicsView 画布：缩放/平移/标注/交互/视图切换/取色模式
+│   ├── canvas.py (420)            # QGraphicsView 画布：缩放/平移/标注/交互/视图切换/取色模式
 │   ├── param_panel.py (332)       # schema→控件自动生成 + 折叠分组 + tooltip + ColorListWidget
 │   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
 │   ├── worker.py (56)             # DetectWorker(QThread) + 预处理图回传
@@ -165,7 +165,9 @@ HSV 默认 H10-40/S62-190/V85-175（由样例菌落像素分布反推：黑字 V
 | Ctrl+E | 文件列表 dock 折叠 |
 | 列表内 Delete | 移除选中（不删磁盘） |
 
-- 画布左上角悬浮三态：**原图 / 预处理 / 标记**（`Canvas.set_view_mode`，纯图层可见性切换）。
+- 画布**左上角**悬浮两态：**原图 / 预处理**（`Canvas.set_view_mode`）；**右上角**「显示标记」复选框
+  （`Canvas.set_show_marks`）独立控制菌落圈/编号叠加的显隐。二者解耦：预处理视图下也能看标记，
+  便于对照灰度产物与检测结果。预处理图皿 ROI 红圈已烘焙进图，标记叠加在其上。
 - 文件列表手势约定（§8.9/8.10 的血泪）：**无修饰单击/双击/Enter = 切图**；
   Ctrl/Shift 多选不切图；右键未选中项 = 加选；右键菜单在打开瞬间快照选区并显示数量，
   目标数为 0 的菜单项置灰。当前显示图**加粗**。
