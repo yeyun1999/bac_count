@@ -299,7 +299,9 @@ class MainWindow(QMainWindow):
         self.scale = min(1.0, WORKING_MAX / max(h, w))
         if self.scale < 1.0:
             wb = cv2.resize(self.bgr, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA)
-            wa = cv2.resize(self.alpha, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_NEAREST)
+            # JPG/BMP 等无 alpha 通道 → self.alpha 为 None（只在 >WORKING_MAX 的图上才会走到这里）
+            wa = (cv2.resize(self.alpha, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_NEAREST)
+                  if self.alpha is not None else None)
         else:
             wb, wa = self.bgr, self.alpha
         self.canvas.set_image(bgra_to_qpixmap(wb, wa))

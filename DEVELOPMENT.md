@@ -44,7 +44,7 @@ src/bac_count/
 │   ├── imio.py (36)              # Unicode 路径安全读写（imread_any/imwrite_any，绕 Windows 代码页坑）
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
-│   ├── main_window.py (624)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
+│   ├── main_window.py (632)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
 │   ├── canvas.py (536)            # 画布：缩放/平移/标注/交互/视图切换/取色模式+放大镜(_LoupeWidget)
 │   ├── param_panel.py (332)       # schema→控件自动生成 + 折叠分组 + tooltip + ColorListWidget
 │   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
@@ -279,6 +279,13 @@ HSV 取色窗口非对称（S 向高饱和放满、向培养基只放一半，V 
     `super().mouseMoveEvent(ev)` 再刷新放大镜。
 22. **做"验证测试能否抓到 bug"的破坏性实验时，别用 `git checkout -- file` 回滚**——
     会把该文件所有未提交改动一起灭掉（本项目实际烧过一次全部重打）。用临时副本或先提交。
+
+**无 alpha 通道图片（2026-10-25 用户实报，Windows + 手机照片）**
+23. `load_image()` 对 JPG/BMP 返回 `alpha=None`，而 `load_current()` 只在 `scale < 1.0`
+    （原图 > WORKING_MAX=1200）的分支里无条件 `cv2.resize(self.alpha, ...)` →
+    OpenCV `(-215:Assertion failed) !ssize.empty()` 直接崩，小 JPG 反而正常（不走缩放分支）。
+    ⇒ 缩放 alpha 前判空；回归测试 `test_load_large_jpg_without_alpha`（造 WORKING_MAX+400 的
+    JPG 走真实 load_paths）。凡"样例全是带 alpha 的 PNG"的地方都要想一遍无 alpha 的路径。
 
 ## 9. 如何扩展
 

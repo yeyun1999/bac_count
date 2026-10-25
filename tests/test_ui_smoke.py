@@ -667,3 +667,29 @@ def test_pick_wheel_zoom_anchor(qtbot, tmp_path):
     assert (after - before).manhattanLength() < 1.0, f"光标锚点漂移: {before} → {after}"
     c.cancel_pick()
     w.close()
+
+
+def test_load_large_jpg_without_alpha(qtbot, tmp_path):
+    """>WORKING_MAX 且无 alpha 通道的 JPG：缩放分支不得对 None alpha 调 cv2.resize。
+
+    回归：main_window.load_current 里 cv2.resize(self.alpha, ...) 未判空，
+    手机拍的照片（JPG、>1200px）一打开就抛 OpenCV (-215:Assertion failed) !ssize.empty()。
+    """
+    import cv2
+    import numpy as np
+
+    from bac_count.core.pipeline import WORKING_MAX
+
+    p = tmp_path / "big.jpg"
+    img = np.full((WORKING_MAX + 400, WORKING_MAX + 300, 3), 210, np.uint8)
+    cv2.circle(img, (600, 700), 18, (120, 110, 100), -1)
+    assert cv2.imwrite(str(p), img)
+
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=30000):
+        w.load_paths([p])
+    assert w.alpha is None, "JPG 不该有 alpha"
+    assert w.scale < 1.0, "图应被缩到工作尺寸（才会触发缩放分支）"
+    assert w.bgr is not None
+    w.close()
