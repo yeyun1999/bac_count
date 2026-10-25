@@ -216,3 +216,35 @@ def test_split_arms_rejected_by_shape_gate():
 
 def test_split_shape_toggle_default_on():
     assert default_params("adaptive")["split_shape"] is True
+
+
+def test_split_fragments_must_pass_min_area():
+    """回归（用户 E1-2 针尖菌落）：哑铃形小菌落拆出的碎片若低于 min_area，
+    下游几何过滤会把碎片全灭、原轮廓又已被替换 → 菌落凭空消失。
+    碎片下限须取 max(15%×候选, min_area)，此时保留原轮廓。"""
+    import cv2
+
+    from bac_count.core.models import Colony
+    from bac_count.core.registry import PrepContext
+    from bac_count.core.split import _split_one
+
+    BROWN = (150, 120, 95)
+    bgr = np.zeros((300, 300, 3), np.uint8)
+    bgr[:, :] = (215, 195, 170)
+    cv2.circle(bgr, (150, 150), 8, BROWN, -1)
+    cv2.circle(bgr, (162, 150), 5, BROWN, -1)
+    mask = np.zeros((300, 300), np.uint8)
+    cv2.circle(mask, (150, 150), 8, 255, -1)
+    cv2.circle(mask, (162, 150), 5, 255, -1)
+    dt = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+    ctx = PrepContext(bgr=bgr, gray=cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY),
+                      dish_mask=None, alpha=None)
+    cand = Colony(x=155.5, y=150, r=12, area=250)
+    p = default_params("adaptive")
+    p["split_on"] = True
+
+    subs_hi = _split_one(ctx, mask, dt, cand, dict(p, min_area=60))
+    assert subs_hi is None, f"卫星碎片(≈45)<min_area=60 时拆分应整体作废：{subs_hi}"
+    subs_lo = _split_one(ctx, mask, dt, cand, dict(p, min_area=30))
+    assert subs_lo is not None and len(subs_lo) == 2, \
+        f"min_area=30 时两碎片均可独立存活，拆分应生效：{subs_lo}"

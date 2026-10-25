@@ -169,14 +169,15 @@ def run_detection(
 
     det = get_detector(params.get("algorithm", "adaptive"))
     raw = det.detect(ctx, params)
-    raw = split_merged(ctx, raw, params)  # ① 粘连拆分（split_on 关闭时原样返回）
-    raw = apply_color_filter(ctx, raw, params)  # ② 颜色过滤（拆分产物同样参与颜色判定）
 
-    # 面积参数按原图 px² 定义 → 换算到工作尺度
+    # 面积参数按原图 px² 定义 → 换算到工作尺度（拆分也要用，碎片须能独立过 min_area）
     p = dict(params)
     s2 = scale * scale
     p["min_area"] = float(params.get("min_area", 20)) * s2
     p["max_area"] = float(params.get("max_area", 800)) * s2
+
+    raw = split_merged(ctx, raw, p)      # ① 粘连拆分（split_on 关闭时原样返回）
+    raw = apply_color_filter(ctx, raw, params)  # ② 颜色过滤（拆分产物同样参与颜色判定）
     kept = _post_filter(raw, p, dish_mask)
     if params.get("dedup_on", True):  # ③ 重叠/包含去重（保留大圆）
         kept = dedup_colonies(kept, float(params.get("dedup_ovl", 0.6)))

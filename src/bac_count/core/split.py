@@ -119,7 +119,9 @@ def _split_one(ctx, binary, dt, c: Colony, params) -> list[Colony] | None:
 
     cand_lab = median_lab_at(ctx.bgr, c.x, c.y, c.r)  # 候选本体参考色（中心种子聚类）
     frags: list[tuple[Colony, np.ndarray | None]] = []
-    min_sub = c.area * _MIN_SUB_AREA_RATIO
+    # 碎片下限：15%×候选 且 ≥ min_area（工作尺度，由 pipeline 传入）——
+    # 拆出的碎片若单独过不了 min_area，拆分等于把菌落拆没（E1-2 针尖菌落实测）
+    min_sub = max(c.area * _MIN_SUB_AREA_RATIO, float(params.get("min_area", 0)))
     for new in remap.values():
         region = ((markers == new) & (crop_b > 0))
         region_u8 = region.astype(np.uint8) * 255

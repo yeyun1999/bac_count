@@ -34,11 +34,11 @@ src/bac_count/
 ├── core/                          # 纯逻辑层：零 Qt 依赖，可单测
 │   ├── models.py (98)             # Colony/ExclRegion/EditState/DetectionResult/ParamSpec + merge()
 │   ├── preprocess.py (106)        # load_image / make_dish_mask / prepare（预处理链）
-│   ├── pipeline.py (179)          # run_detection 总调度 + PRE/POST_SCHEMA + default_params
+│   ├── pipeline.py (191)          # run_detection 总调度 + PRE/POST_SCHEMA + default_params
 │   ├── registry.py (46)           # Detector ABC + @register 注册表 + PrepContext
 │   ├── detectors/{threshold,adaptive,blob,hough,hsv}.py   # 5 个算法，一文件一个
 │   ├── edits.py (75)              # EditHistory：增删/undo/redo（纯逻辑）
-│   ├── split.py (161)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
+│   ├── split.py (163)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
 │   ├── color.py (86)              # 颜色过滤：菌落色保留/排除色剔除（color_on 开关，默认关）
 │   ├── dedup.py (48)              # 重叠/包含去重：交集占小圆比例阈值（默认开）
 │   ├── imio.py (36)              # Unicode 路径安全读写（imread_any/imwrite_any，绕 Windows 代码页坑）
@@ -50,7 +50,7 @@ src/bac_count/
 │   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
 │   ├── worker.py (56)             # DetectWorker(QThread) + 预处理图回传
 │   └── presets.py (26)            # 参数预设 JSON → ~/.bac_count/presets/
-tests/                             # 65 个：算法/编辑逻辑/GUI 冒烟+交互回归
+tests/                             # 75 个：算法/编辑逻辑/GUI 冒烟+交互回归
 sample/                            # 5 张真实样例（RGBA PNG ~800px，见 §6）
 ```
 
@@ -128,10 +128,12 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
   （用户 E0-1 实拍两菌落拆分后归零事故）。碎片圆心是**裁剪局部坐标**，采样必须 +x0/+y0
   （写错时合法拆分全灭，回归测试抓到）。
 - 距离变换找峰：从 split_peak 向上搜到 0.9，第一个分出 ≥2 稳定核（≥2px）的阈值做 watershed marker；
-  子区域面积 ≥15% 才保留，碎片再过颜色守卫与 min_area/min_circ 过滤。
+  碎片面积下限 = **max(15%×候选, min_area)**——碎片若单独过不了 min_area，下游几何过滤会
+  把碎片全灭而原轮廓已被替换，等于"把菌落拆没"（E1-2 针尖菌落实报 45→43 事故）；
+  有效碎片 <2 时拆分整体作废、保留原轮廓。
 - **物理极限**：中心距 < 半径（重叠 >50%）时鞍部/峰值比 >0.9 拆不动——预期行为，靠手动。
-- 样例基线：E0-3 开拆分 51→52（守卫上线前为 54，多出的 2 个正是笔画交叉处碎片，
-  中心近黑 rgb≈(40,35,30)、圆度 0.36 擦线——守卫精准剔除）。
+- 样例基线：E0-3 开拆分 51→52、P24-2 110→112、P24-3 109→112（新增均为真粘连对半块，
+  中心近黑笔画交叉碎片已被三校验剔除）；E1-2 针尖板 45→45（min_area 下限保护）。
 
 ### 5.7 颜色过滤（color.py，默认关，pipeline 在拆分后、几何过滤前调用）
 - 两张取色表：`keep_colors`（菌落色，非空时与所有表色 Lab 距离 > `keep_tol` 的候选去掉）、
