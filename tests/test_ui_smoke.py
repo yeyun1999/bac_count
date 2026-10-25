@@ -631,3 +631,39 @@ def test_loupe_tracks_view_zoom(qtbot, tmp_path):
     assert c._loupe._src <= 160.0, "远端应被钳制"
     c.cancel_pick()
     w.close()
+
+
+def test_pick_wheel_zoom_anchor(qtbot, tmp_path):
+    """取色中滚轮缩放必须以光标为锚点（光标下场景点不动）——回归 move 未转发基类导致锚点漂移。"""
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import QPoint, QPointF, QSettings
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    img = np.zeros((300, 300, 3), np.uint8)
+    img[:, :] = (210, 235, 240)
+    cv2.circle(img, (80, 90), 10, (60, 60, 210), -1)
+    f = tmp_path / "scene.png"
+    assert cv2.imwrite(str(f), img)
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    w.show()
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths([f])
+    qtbot.wait(200)
+    c = w.canvas
+    c.enter_pick()
+    vp = QPoint(180, 180)
+    qtbot.mouseMove(c.viewport(), pos=vp)
+    before = c.mapToScene(vp)
+    ev = QWheelEvent(QPointF(vp), c.viewport().mapToGlobal(vp),
+                     QPoint(0, 0), QPoint(0, 120),
+                     Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                     Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(c.viewport(), ev)
+    after = c.mapToScene(vp)
+    assert (after - before).manhattanLength() < 1.0, f"光标锚点漂移: {before} → {after}"
+    c.cancel_pick()
+    w.close()

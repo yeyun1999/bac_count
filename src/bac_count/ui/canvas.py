@@ -141,6 +141,7 @@ class Canvas(QGraphicsView):
         self._ctrl_held = False   # Ctrl 临时反转 添加/删除
         self._picking = False     # 取色模式（panel 🎨 触发）
         self._pick_img: QImage | None = None   # 取色会话的原图缓存
+        self._pick_pos: QPointF | None = None  # 最近一次取色鼠标视口坐标（滚轮后刷新放大镜）
         self._build_view_bar()
         self._loupe = _LoupeWidget(self.viewport())
         self._loupe.hide()
@@ -280,6 +281,7 @@ class Canvas(QGraphicsView):
     def enter_pick(self) -> None:
         pm = self._pix.pixmap()
         self._pick_img = None if pm.isNull() else pm.toImage()
+        self._pick_pos = None
         self._picking = True
         self.setFocus()  # 🎨 按钮点击会把焦点留在面板，空格/Ctrl/Esc 必须直达画布
         self._apply_drag_and_cursor()
@@ -289,6 +291,7 @@ class Canvas(QGraphicsView):
     def _end_pick(self) -> None:
         self._picking = False
         self._pick_img = None
+        self._pick_pos = None
         self._loupe.hide()
         self._apply_drag_and_cursor()
 
@@ -435,6 +438,9 @@ class Canvas(QGraphicsView):
 
     def wheelEvent(self, ev) -> None:
         self.zoom(1.15 if ev.angleDelta().y() > 0 else 1 / 1.15)
+        if self._picking and self._pick_pos is not None:
+            # 缩放后放大镜原地刷新（源区域随新倍率变化）
+            self._update_loupe(self.mapToScene(self._pick_pos.toPoint()), self._pick_pos)
 
     def mousePressEvent(self, ev) -> None:
         if self._picking:
@@ -490,7 +496,10 @@ class Canvas(QGraphicsView):
             if self._space_pan:
                 super().mouseMoveEvent(ev)  # 平移拖拽由基类处理
                 return
+            # 必须转给基类：AnchorUnderMouse 依赖基类跟踪的鼠标位置，否则滚轮缩放锚点漂移
+            super().mouseMoveEvent(ev)
             sp = self.mapToScene(ev.position().toPoint())
+            self._pick_pos = QPointF(ev.position())
             self._update_loupe(sp, ev.position())
             ev.accept()
             return

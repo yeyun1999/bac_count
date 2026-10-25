@@ -132,7 +132,7 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
   取色时光标旁跟随**圆形放大镜**（_LoupeWidget：源区域随视图缩放自适应，
   观感恒为**屏幕当前倍率×3**（`LOUPE_REL`，源区域=D/(view_scale×3)，钳制 4~160 场景 px），
   最近邻放大+十字+RGB 色卡，事件驱动零定时器；WA_TransparentForMouseEvents 不挡点击；
-  换图自动 cancel_pick）；
+  滚轮缩放后原地刷新（记住 `_pick_pos`）；换图自动 cancel_pick）；
   色块点击=移除该色；`ColorListWidget` 值永远整表替换
   （配合每图快照 `dict()` 浅拷贝是安全的——禁止原地 append）。
 - E0-3 实测：常规参数下 keep/drop 均 51→51 零误伤；放宽几何（min_circ=0）63→59 正确滤出 4 个墨色笔画。
@@ -258,6 +258,12 @@ HSV 取色窗口非对称（S 向高饱和放满、向培养基只放一半，V 
     点击画布才把焦点带回来）。⇒ `enter_pick()` 里 `setFocus()` + ColorListWidget 全部
     按钮 `NoFocus`。**QTest.keyPress(widget) 直接发给指定 widget、绕过焦点路由，这种 bug
     行为测试测不出**——要断言 `canvas.hasFocus()`（需 w.show()+waitExposed）。
+21. **覆写 `mouseMoveEvent` 提前 return 不调基类 → 滚轮缩放锚点漂移**：
+    `AnchorUnderMouse` 靠基类在 move 事件里记录的鼠标位置；取色分支吞掉 move 后该位置
+    过期，wheelEvent 缩放中心乱飘（浏览模式正常，因为走了 super()）。⇒ 取色分支也先
+    `super().mouseMoveEvent(ev)` 再刷新放大镜。
+22. **做"验证测试能否抓到 bug"的破坏性实验时，别用 `git checkout -- file` 回滚**——
+    会把该文件所有未提交改动一起灭掉（本项目实际烧过一次全部重打）。用临时副本或先提交。
 
 ## 9. 如何扩展
 
