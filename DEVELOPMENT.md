@@ -41,6 +41,7 @@ src/bac_count/
 │   ├── split.py (119)             # 粘连拆分：距离变换+分水岭（split_on 开关，默认关）
 │   ├── color.py (86)              # 颜色过滤：菌落色保留/排除色剔除（color_on 开关，默认关）
 │   ├── dedup.py (48)              # 重叠/包含去重：交集占小圆比例阈值（默认开）
+│   ├── imio.py (38)              # Unicode 路径安全读写（imread_any/imwrite_any，绕 Windows 代码页坑）
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
 │   ├── main_window.py (624)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
@@ -49,7 +50,7 @@ src/bac_count/
 │   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
 │   ├── worker.py (56)             # DetectWorker(QThread) + 预处理图回传
 │   └── presets.py (26)            # 参数预设 JSON → ~/.bac_count/presets/
-tests/                             # 60 个：算法/编辑逻辑/GUI 冒烟+交互回归
+tests/                             # 64 个：算法/编辑逻辑/GUI 冒烟+交互回归
 sample/                            # 5 张真实样例（RGBA PNG ~800px，见 §6）
 ```
 
@@ -243,6 +244,10 @@ HSV 取色窗口非对称（S 向高饱和放满、向培养基只放一半，V 
     RETR_EXTERNAL 只剩一个巨轮廓被 max_area 滤光 → 计数从 54 直接跳 0（无渐变）。
     ⇒ 非对称窗口向培养基方向半格（§5.9）。另：OpenCV 5 的 `inRange` 拒收 np.int64 标量元组，
     边界值必须转 Python int。
+19. **Windows 中文路径**：`cv2.imread/imwrite` 按进程 ANSI 代码页解析路径，UTF-8 中文被
+    GBK 误解码（课题→璇鹃）→ 用户真实数据目录直接读不出（v1.0.0 exe 实报）。
+    ⇒ 一律走 `core/imio.py`：Python `read_bytes`（宽字符 API）+ `cv2.imdecode`，
+    写侧 `cv2.imencode` + `write_bytes`。CSV/JSON/预设本来就走 Python IO，不受影响。
 
 ## 9. 如何扩展
 

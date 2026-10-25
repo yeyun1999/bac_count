@@ -10,6 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from bac_count.core.imio import imwrite_any
 from bac_count.core.models import Colony, EditState
 
 __all__ = ["draw_overlay", "export_png", "write_summary_csv", "write_full_json"]
@@ -30,8 +31,8 @@ def draw_overlay(bgr: np.ndarray, colonies: list[Colony], scale: float = 1.0, sh
 
 
 def export_png(path: str | Path, bgr: np.ndarray, colonies: list[Colony], scale: float = 1.0) -> None:
-    """单张标注图（批量导出时由调用方逐张调用）。"""
-    cv2.imwrite(str(path), draw_overlay(bgr, colonies, scale))
+    """单张标注图（批量导出时由调用方逐张调用）。中文路径安全（core/imio）。"""
+    imwrite_any(path, draw_overlay(bgr, colonies, scale))
 
 
 def write_summary_csv(path: str | Path, rows: list[dict]) -> None:

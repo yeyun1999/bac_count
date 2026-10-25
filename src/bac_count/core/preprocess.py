@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from bac_count.core.imio import imread_any
 from bac_count.core.registry import PrepContext
 
 __all__ = ["load_image", "make_dish_mask", "prepare"]
@@ -14,8 +15,8 @@ IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 
 
 def load_image(path: str | Path) -> tuple[np.ndarray, np.ndarray | None]:
-    """读取为 BGR + alpha（0/255 uint8 或 None）。"""
-    raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    """读取为 BGR + alpha（0/255 uint8 或 None）。中文路径安全（core/imio）。"""
+    raw = imread_any(path)
     if raw is None:
         raise ValueError(f"无法读取图片: {path}")
     if raw.dtype == np.uint16:
