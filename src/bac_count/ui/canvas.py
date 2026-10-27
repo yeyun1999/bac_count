@@ -7,6 +7,7 @@ import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFrame,
     QGraphicsEllipseItem,
@@ -15,7 +16,11 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
+    QLineEdit,
+    QPlainTextEdit,
     QToolButton,
+    QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -134,6 +139,7 @@ class Canvas(QGraphicsView):
         self._mode = MODE_BROWSE
         self._view_mode = VIEW_ORIG
         self._show_marks = True   # 标记叠加（菌落圈/编号）显隐，独立于视图选择
+        self._show_ids = True     # 菌落圈右边的编号显隐（隶属"显示标记"）
         self._hover: Colony | None = None
         self._panning = False
         self._pan_start = QPoint()
@@ -179,14 +185,21 @@ class Canvas(QGraphicsView):
             "#marksBar{background:rgba(40,42,46,200); border-radius:6px;}"
             "QCheckBox{color:#ddd; spacing:5px;}"
         )
-        play = QHBoxLayout(mbar)
+        play = QVBoxLayout(mbar)
         play.setContentsMargins(8, 4, 8, 4)
+        play.setSpacing(2)
         self._chk_marks = QCheckBox("显示标记", mbar)
         self._chk_marks.setChecked(self._show_marks)
         self._chk_marks.setCursor(Qt.PointingHandCursor)
         self._chk_marks.setToolTip("菌落圆圈/编号叠加的显隐（原图与预处理视图通用）")
         self._chk_marks.toggled.connect(self.set_show_marks)
         play.addWidget(self._chk_marks)
+        self._chk_ids = QCheckBox("显示编号", mbar)
+        self._chk_ids.setChecked(self._show_ids)
+        self._chk_ids.setCursor(Qt.PointingHandCursor)
+        self._chk_ids.setToolTip("菌落圈右边的数字（圈号）显隐；关掉后只剩圆圈，密集平板更清爽")
+        self._chk_ids.toggled.connect(self.set_show_ids)
+        play.addWidget(self._chk_ids)
         mbar.adjustSize()
         self._marks_bar = mbar
         self._reposition_floats()
@@ -222,18 +235,27 @@ class Canvas(QGraphicsView):
             b.blockSignals(False)
         self._apply_view()
 
+    def _apply_marks_visibility(self) -> None:
+        """圈只看「显示标记」；编号还要看「显示编号」——标记全关时编号必然不显示。"""
+        for item in self._overlay:
+            is_id = item.data(0) == 1
+            item.setVisible(self._show_marks and (self._show_ids or not is_id))
+
     def _apply_view(self) -> None:
         has_prep = not self._prep_pix.pixmap().isNull()
         prep_on = self._view_mode == VIEW_PREP and has_prep
         self._prep_pix.setVisible(prep_on)
         self._pix.setVisible(not prep_on)  # 无预处理图时回退原图
-        for item in self._overlay:
-            item.setVisible(self._show_marks)
+        self._apply_marks_visibility()
 
     def set_show_marks(self, on: bool) -> None:
         self._show_marks = bool(on)
-        for item in self._overlay:
-            item.setVisible(self._show_marks)
+        self._chk_ids.setEnabled(self._show_marks)  # 标记全关时"显示编号"无从生效，置灰
+        self._apply_marks_visibility()
+
+    def set_show_ids(self, on: bool) -> None:
+        self._show_ids = bool(on)
+        self._apply_marks_visibility()
 
     def clear_image(self) -> None:
         self.set_image(bgra_to_qpixmap(np.zeros((10, 10, 3), np.uint8), None))
@@ -259,6 +281,7 @@ class Canvas(QGraphicsView):
             el = QGraphicsEllipseItem(QRectF(c.x * s - r, c.y * s - r, 2 * r, 2 * r))
             el.setPen(pen)
             el.setZValue(10)
+            el.setData(0, 0)  # 0 = 菌落圈（只看"显示标记"）
             el.setVisible(self._show_marks)
             self._scene.addItem(el)
             self._overlay.append(el)
@@ -267,7 +290,8 @@ class Canvas(QGraphicsView):
             txt.setBrush(pen.color())
             txt.setPos(c.x * s + r + 1, c.y * s - r - 1)
             txt.setZValue(11)
-            txt.setVisible(self._show_marks)
+            txt.setData(0, 1)  # 1 = 编号（还受"显示编号"管）
+            txt.setVisible(self._show_marks and self._show_ids)
             self._scene.addItem(txt)
             self._overlay.append(txt)
 
@@ -430,6 +454,19 @@ class Canvas(QGraphicsView):
         self._ctrl_held = False
         self._apply_drag_and_cursor()
         super().focusOutEvent(ev)
+
+    def enterEvent(self, ev) -> None:
+        super().enterEvent(ev)
+        # 鼠标移到图片上就取焦点：空格平移、1/2/3 切模式、Esc 取消取色不用先点一下才生效
+        if self.hasFocus():
+            return
+        if QApplication.activeModalWidget() is not None:
+            return  # 对话框（如"保存预设"命名框）打开期间不抢焦点
+        fw = self.window().focusWidget()
+        # 正在输入文本时别抢：面板 spinbox 的内层 QLineEdit、取色输入框、命名框
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            return
+        self.setFocus()
 
     def leaveEvent(self, ev) -> None:
         if self._picking:

@@ -219,9 +219,16 @@ HSV 取色窗口非对称（S 向高饱和放满、向培养基只放一半，V 
   另注：`EditHistory._hit`（core，编辑层）仍保留 `max(c.r+4, 10)`，但 `colonyClicked`
   发出的是已严格命中的那只、`_on_remove_click` 拿它的圆心去重命中，落点必然还是同一只；
   两层判据重复本身是优化指南 §6.6 想合并的项。
-- 画布**左上角**悬浮两态：**原图 / 预处理**（`Canvas.set_view_mode`）；**右上角**「显示标记」复选框
-  （`Canvas.set_show_marks`）独立控制菌落圈/编号叠加的显隐。二者解耦：预处理视图下也能看标记，
-  便于对照灰度产物与检测结果。预处理图皿 ROI 红圈已烘焙进图，标记叠加在其上。
+- 画布**左上角**悬浮两态：**原图 / 预处理**（`Canvas.set_view_mode`）；**右上角**竖排两个复选框
+  「显示标记」（`Canvas.set_show_marks`，圈+编号总开关）与「显示编号」（`Canvas.set_show_ids`，
+  只管圈右边那个数字，密集平板关掉更清爽；标记关掉时它 `setEnabled(False)` 置灰，避免"勾了没反应"）。
+  两类叠加 item 用 `item.data(0)`（0=圈 / 1=编号）区分，统一由 `_apply_marks_visibility()` 算可见性：
+  `标记 and (显示编号 or 不是编号)`，视图切换与 `_redraw_overlay` 重建后都走这条，
+  所以关着编号来了新检测结果也不会被重新点亮。二者与视图选择解耦：预处理视图下同样可控。
+- `Canvas.enterEvent` 让画布在鼠标进入时 `setFocus()`（空格/1/2/3/Esc 不必先点一下）。
+  两处**不抢**：`QApplication.activeModalWidget()` 非 None（模态对话框期间），以及当前焦点
+  是 `QLineEdit/QTextEdit/QPlainTextEdit`（面板 spinbox 的内层 QLineEdit、预设命名框等正在
+  输入的控件——鼠标路过就打断输入是不可接受的）。
 - 文件列表手势约定（§8.9/8.10 的血泪）：**无修饰单击/双击/Enter = 切图**；
   Ctrl/Shift 多选不切图；右键未选中项 = 加选；右键菜单在打开瞬间快照选区并显示数量，
   目标数为 0 的菜单项置灰。当前显示图**加粗**。

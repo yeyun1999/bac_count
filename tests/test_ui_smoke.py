@@ -1037,3 +1037,93 @@ def test_click_requires_cursor_inside_colony(qtbot, tmp_path):
     click(134, 120)
     assert len(w._history().state.additions) == n_add + 1, "圈外应可正常新增"
     w.close()
+
+
+def test_show_ids_checkbox(qtbot):
+    """右上角「显示编号」单独控制菌落圈右边的数字；「显示标记」是它的上级开关。"""
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files[:1])
+    qtbot.wait(600)
+    c = w.canvas
+    assert c._chk_ids.isChecked() and c._show_ids
+    circles = [it for it in c._overlay if it.data(0) == 0]
+    ids = [it for it in c._overlay if it.data(0) == 1]
+    assert circles and ids and len(circles) == len(ids)
+    assert all(it.isVisible() for it in c._overlay)
+
+    c._chk_ids.setChecked(False)  # 只剩圈，没有数字
+    assert all(it.isVisible() for it in circles)
+    assert all(not it.isVisible() for it in ids)
+    assert c._chk_marks.isChecked() and c._chk_ids.isEnabled()
+
+    c._chk_ids.setChecked(True)
+    assert all(it.isVisible() for it in c._overlay)
+
+    # 上级关掉：全隐 + 编号框置灰（免得勾了没反应让人以为坏了）
+    c._chk_marks.setChecked(False)
+    assert all(not it.isVisible() for it in c._overlay)
+    assert not c._chk_ids.isEnabled()
+    c._chk_marks.setChecked(True)
+    assert c._chk_ids.isEnabled() and all(it.isVisible() for it in c._overlay)
+
+    # 关着编号时来了新结果（_redraw_overlay 重建 item）也要保持关的状态
+    c._chk_ids.setChecked(False)
+    c.set_colonies(c._colonies, c._scale)
+    circles2 = [it for it in c._overlay if it.data(0) == 0]
+    ids2 = [it for it in c._overlay if it.data(0) == 1]
+    assert all(it.isVisible() for it in circles2) and all(not it.isVisible() for it in ids2)
+    w.close()
+
+
+def test_canvas_takes_focus_on_hover(qtbot):
+    """鼠标移到图片上，画布自动拿到焦点：空格/1/2/3/Esc 立刻可用，不用先点一下。
+
+    但正在往文本框里打字时不抢焦点（面板 spinbox 的内层 QLineEdit、预设命名框等），
+    否则鼠标路过就打断输入。
+    """
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication, QLineEdit
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    w.show()
+    qtbot.waitExposed(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files[:1])
+    qtbot.wait(400)
+    c = w.canvas
+    enter = lambda: QApplication.sendEvent(c, QEvent(QEvent.Type.Enter))  # noqa: E731
+
+    w.file_list.setFocus()
+    QApplication.processEvents()
+    assert not c.hasFocus() and w.focusWidget() is w.file_list
+    enter()
+    QApplication.processEvents()
+    assert c.hasFocus(), "鼠标进入画布没有自动取焦点"
+
+    # 焦点已在画布 → 重复进入不报错、不丢失
+    enter()
+    assert c.hasFocus()
+
+    # 正在输入文本：不抢
+    box = QLineEdit(w)
+    box.setObjectName("typing")
+    box.show()
+    box.setFocus()
+    QApplication.processEvents()
+    assert w.focusWidget() is box
+    enter()
+    QApplication.processEvents()
+    assert not c.hasFocus(), "从正在输入的文本框抢走了焦点"
+    assert w.focusWidget() is box
+
+    # 非文本控件（文件列表）之间仍会正常让位给画布
+    w.file_list.setFocus()
+    QApplication.processEvents()
+    enter()
+    assert c.hasFocus()
+    w.close()
