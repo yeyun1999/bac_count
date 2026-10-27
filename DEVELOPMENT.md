@@ -44,13 +44,13 @@ src/bac_count/
 │   ├── imio.py (36)              # Unicode 路径安全读写（imread_any/imwrite_any，绕 Windows 代码页坑）
 │   └── export.py (75)             # draw_overlay / PNG / 汇总CSV / 完整JSON
 ├── ui/                            # Qt 层
-│   ├── main_window.py (632)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
+│   ├── main_window.py (739)       # 组装一切：状态机、调度、编辑、导出、预设、取色接线
 │   ├── canvas.py (536)            # 画布：缩放/平移/标注/交互/视图切换/取色模式+放大镜(_LoupeWidget)
 │   ├── param_panel.py (332)       # schema→控件自动生成 + 折叠分组 + tooltip + ColorListWidget
-│   ├── file_list.py (161)         # 左侧文件列表：拖放/多选/右键菜单
+│   ├── file_list.py (255)         # 左侧文件列表：拖放/多选/拖动排序/按名称排序/右键菜单
 │   ├── worker.py (56)             # DetectWorker(QThread) + 预处理图回传
 │   └── presets.py (26)            # 参数预设 JSON → ~/.bac_count/presets/
-tests/                             # 75 个：算法/编辑逻辑/GUI 冒烟+交互回归
+tests/                             # 120 个：算法/编辑逻辑/GUI 冒烟+交互回归
 sample/                            # 5 张真实样例（RGBA PNG ~800px，见 §6）
 ```
 
@@ -240,6 +240,13 @@ HSV 取色窗口非对称（S 向高饱和放满、向培养基只放一半，V 
 - 文件列表手势约定（§8.9/8.10 的血泪）：**无修饰单击/双击/Enter = 切图**；
   Ctrl/Shift 多选不切图；右键未选中项 = 加选；右键菜单在打开瞬间快照选区并显示数量，
   目标数为 0 的菜单项置灰。当前显示图**加粗**。
+- 文件列表**排序**：拖动条目换位置（`DragDropMode.InternalMove`）或右键「按名称排序」
+  （`natural_sort_key`：名字里的数字按**数值**比，图2 在 图10 前）。**列表行序 = 导航序
+  （◀▶ / Alt+←→）= 批量导出行序**，`FileList.orderChanged` 把新序写回 `self.images`。
+  三条不变量：当前图按**路径**跟随新行（不重载、不跳图，加粗跟着走）；选区按**文件**保留
+  （`_reselect` 必须在行号与 current 都落定之后调用，否则多选会被 `setCurrentRow` 塌成单选）；
+  条目数与 `self.images` 对不上时以 `self.images` 为准重建列表（`_on_order_changed` 的兜底）。
+  拖动结束后 Qt 还会补一次左键 release，靠 `_dragging` 标志吃掉，否则"排完序切到别的图"。
 - 参数面板：按**检测执行顺序**分七组可折叠——皿 ROI → 预处理 → 检测算法（选择+算法参数同组）→
   粘连拆分 → 颜色过滤 → 后处理过滤 → 手动校正（默认收起 预处理/后处理过滤/手动校正），折叠态存 QSettings
   （org/app 均为 `bac_count`，Linux 落 `~/.config/bac_count/bac_count.conf`）。

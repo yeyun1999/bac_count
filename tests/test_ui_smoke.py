@@ -1174,3 +1174,207 @@ def test_manual_add_radius_follows_auto_median(qtbot):
     w._on_add_click(40, 40)
     assert last_manual().r == 6.0
     w.close()
+
+
+# ---------------------------------------------------------------- 拖动排序 / 按名称排序
+
+def _make_images(tmp_path, names):
+    """造几张真实可读的小图（名字里的数字故意让"词法序 ≠ 数值序"）。"""
+    import cv2
+    import numpy as np
+
+    out = []
+    for n in names:
+        img = np.zeros((60, 60, 3), dtype=np.uint8)
+        cv2.circle(img, (30, 30), 6, (120, 120, 120), -1)
+        p = tmp_path / n
+        assert cv2.imwrite(str(p), img)
+        out.append(p)
+    return out
+
+
+def test_natural_sort_key_orders_numbers_by_value():
+    from bac_count.ui.file_list import natural_sort_key
+
+    names = ["图10.png", "图2.png", "E12-2.png", "E0-3.png",
+             "plate9.png", "plate10.png", "a.png", "B.png"]
+    got = sorted(names, key=natural_sort_key)
+    assert got == ["a.png", "B.png", "E0-3.png", "E12-2.png",
+                   "plate9.png", "plate10.png", "图2.png", "图10.png"]
+    # 数字按大小，不是按字符：图2 必须在 图10 之前
+    assert got.index("图2.png") < got.index("图10.png")
+    assert got.index("E0-3.png") < got.index("E12-2.png")
+
+
+def test_sort_by_name_menu_reorders_and_current_follows(qtbot, monkeypatch, tmp_path):
+    """右键「按名称排序」：列表与 self.images 同步、当前图跟着自己走、选区按文件保留。"""
+    from bac_count.ui.file_list import FileList
+
+    captured = []
+    monkeypatch.setattr(FileList, "_popup_menu", lambda self, menu, pos: captured.append(menu))
+    files = _make_images(tmp_path, ["图10.png", "图2.png", "E12-2.png", "E0-3.png", "plate9.png"])
+    want = ["E0-3.png", "E12-2.png", "plate9.png", "图2.png", "图10.png"]  # 数值序
+
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    fl = w.file_list
+    vp = fl.viewport()
+    pos = lambda r: fl.visualItemRect(fl.item(r)).center()
+    tips = lambda: [fl.item(i).toolTip() for i in range(fl.count())]
+    sel_tips = lambda: {fl.item(fl.row(i)).toolTip() for i in fl.selectedItems()}
+
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):  # 先切到 row2
+        qtbot.mouseClick(vp, Qt.LeftButton, pos=pos(2))
+    qtbot.wait(200)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):  # 再切到 row0 = 图10.png
+        qtbot.mouseClick(vp, Qt.LeftButton, pos=pos(0))
+    qtbot.wait(200)
+    cur = w.images[w.idx]
+    assert cur.name == "图10.png"
+    qtbot.mouseClick(vp, Qt.LeftButton, Qt.ControlModifier, pos(2))
+    qtbot.mouseClick(vp, Qt.LeftButton, Qt.ControlModifier, pos(4))
+    qtbot.mouseClick(vp, Qt.RightButton, pos=pos(1))  # 右键加选（既有行为）
+    _send_context_menu(fl, pos(1))
+    act = next(a for a in captured[-1].actions() if a.text() == "按名称排序")
+    assert act.isEnabled()
+    sel_before = sel_tips()
+    assert len(sel_before) == 4
+    act.trigger()
+    qtbot.wait(100)
+
+    assert tips() == [str(tmp_path / n) for n in want], "列表行序没有按名称排"
+    assert [p.name for p in w.images] == want, "self.images 没跟着列表走（导航/导出序）"
+    assert w.images[w.idx] == cur, "当前图应该跟着自己走，不该跳到别的图"
+    bolded = [fl.item(i).toolTip() for i in range(fl.count()) if fl.item(i).font().bold()]
+    assert bolded == [str(cur)], "加粗标记没跟着当前图走"
+    assert sel_tips() == sel_before, "排序销毁了选区"
+    w.close()
+
+
+def test_drag_reorder_syncs_images_and_blocks_accidental_switch(qtbot, monkeypatch):
+    """模拟 Qt 内部移动（offscreen 平台没有真实 DnD，只能替掉 Qt 那半段）：
+    FileList.startDrag 在真实拖动里由 Qt 自己调用 → 新顺序必须写回导航/导出序。"""
+    from PySide6.QtWidgets import QListWidget
+
+    def fake_internal_move(self, actions):  # 把按住的第 0 行搬到列表末尾
+        self.insertItem(self.count() - 1, self.takeItem(0))
+
+    monkeypatch.setattr(QListWidget, "startDrag", fake_internal_move)
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    assert len(files) >= 3
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    fl = w.file_list
+    vp = fl.viewport()
+    pos = lambda r: fl.visualItemRect(fl.item(r)).center()
+
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):  # 当前图 = files[1]
+        qtbot.mouseClick(vp, Qt.LeftButton, pos=pos(1))
+    qtbot.wait(200)
+    cur = w.images[w.idx]
+
+    qtbot.mousePress(vp, Qt.LeftButton, pos=pos(0))  # 按住第 0 行（还没松手，不该切图）
+    fl.startDrag(Qt.MoveAction)                      # Qt 真实拖动时自己会调这一句
+    qtbot.wait(100)
+
+    expected = files[1:] + files[:1]
+    assert [str(p) for p in w.images] == [str(p) for p in expected], "拖动结果没写回 self.images"
+    assert w.images[w.idx] == cur, "当前图应该跟着自己走"
+    assert w.idx == 0
+    tips = [fl.item(i).toolTip() for i in range(fl.count())]
+    assert tips == [str(p) for p in expected]
+    assert fl.item([str(p) for p in expected].index(str(cur))).font().bold(), "加粗标记没跟着走"
+    assert fl.currentRow() == w.idx, "列表 current 行没跟上（Enter/方向键会跳到别的图）"
+
+    # 拖动结束后 Qt 还会送一次 release：不能被当成"单击切图"
+    qtbot.mouseRelease(vp, Qt.LeftButton, pos=pos(fl.count() - 1))
+    qtbot.wait(100)
+    assert w.idx == 0 and w.images[w.idx] == cur, "拖完序被误当成单击切图"
+    w.close()
+
+
+def test_cancelled_drag_changes_nothing(qtbot, monkeypatch):
+    """拖到不接收它的目标（画布只认图片 url）→ Qt 不动条目，我们也绝不改顺序、不误切图。"""
+    from PySide6.QtWidgets import QListWidget
+
+    monkeypatch.setattr(QListWidget, "startDrag", lambda self, actions: None)
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    fl = w.file_list
+    vp = fl.viewport()
+    pos = lambda r: fl.visualItemRect(fl.item(r)).center()
+    ordered = []
+    fl.orderChanged.connect(ordered.append)
+    before = [str(p) for p in w.images]
+
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        qtbot.mouseClick(vp, Qt.LeftButton, pos=pos(1))
+    qtbot.wait(200)
+    qtbot.mousePress(vp, Qt.LeftButton, pos=pos(3))
+    fl.startDrag(Qt.MoveAction)
+    qtbot.mouseRelease(vp, Qt.LeftButton, pos=pos(3))
+    qtbot.wait(100)
+    assert not ordered, "没有移动却广播了新顺序"
+    assert [str(p) for p in w.images] == before, "顺序被凭空改动"
+    assert w.idx == 1 and w.images[w.idx] == files[1], "取消的拖动被误当成单击切图"
+    w.close()
+
+
+def test_internal_drag_mime_is_never_an_import(qtbot):
+    """内部拖动的 mime 不含 url → 决不能被当成"拖入图片导入"。"""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QDropEvent
+
+    from bac_count.ui.file_list import FileList
+
+    class _Ev:  # 只提供 mimeData()
+        def __init__(self, m):
+            self._m = m
+
+        def mimeData(self):
+            return self._m
+
+    fl = FileList()
+    qtbot.addWidget(fl)
+    paths = [Path("/tmp/a1.png"), Path("/tmp/a10.png"), Path("/tmp/b2.png")]
+    fl.set_paths(paths)
+    fl.resize(200, 160)
+    fl.show()
+    qtbot.wait(50)
+    dropped, ordered = [], []
+    fl.pathsDropped.connect(dropped.append)
+    fl.orderChanged.connect(ordered.append)
+
+    mime = fl.model().mimeData([fl.model().index(0, 0)])
+    assert not mime.hasUrls(), "内部拖动的 mime 现在带 url 了 —— 会和拖入导入撞车"
+    assert not fl._mime_ok(_Ev(mime))
+    fl.dropEvent(QDropEvent(QPoint(10, 30), Qt.MoveAction, mime, Qt.LeftButton, Qt.NoModifier))
+    assert not dropped, "内部拖动被当成了图片导入"
+    assert fl.count() == 3 and [str(p) for p in fl.pathsInOrder()] == [str(p) for p in paths]
+    assert not ordered, "Qt 没有搬条目，我们也不该凭空改顺序"
+
+
+def test_order_guard_rebuilds_list_when_entries_disagree(qtbot):
+    """列表条目数与 self.images 对不上时：以 self.images 为准重建，导航/导出不会错行。"""
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(300)
+    fl = w.file_list
+    fl.orderChanged.emit([w.images[0]])  # 模拟条目丢失
+    qtbot.wait(100)
+    assert [str(p) for p in w.images] == [str(f) for f in files], "self.images 被污染"
+    assert [fl.item(i).toolTip() for i in range(fl.count())] == [str(f) for f in files], "列表没有重建"
+    w.close()

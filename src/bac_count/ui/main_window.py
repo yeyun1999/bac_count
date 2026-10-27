@@ -74,6 +74,7 @@ class MainWindow(QMainWindow):
         self.file_list.copyParamsToSelected.connect(self._copy_params_to)
         self.file_list.copyParamsToAll.connect(self._copy_params_to_all)
         self.file_list.itemPicked.connect(self._on_list_pick)
+        self.file_list.orderChanged.connect(self._on_order_changed)
         self._file_dock = QDockWidget("文件列表", self)
         self._file_dock.setObjectName("file_dock")
         self._file_dock.setWidget(self.file_list)
@@ -243,6 +244,21 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(self.images) and row != self.idx:
             self.idx = row
             self.load_current()
+
+    def _on_order_changed(self, order: list[Path]) -> None:
+        """列表顺序 = 导航顺序（◀▶ / Alt+←→）= 批量导出的行顺序。
+        拖动排序或「按名称排序」后把新顺序写回 self.images。
+        当前图按**路径**跟随新行号：不重载、不重新检测，看的还是那张图。
+        """
+        order = [Path(p) for p in order]
+        cur = self.images[self.idx] if 0 <= self.idx < len(self.images) else None
+        if len(order) != len(self.images) or {str(p) for p in order} != {str(p) for p in self.images}:
+            # 条目数与图片数不一致（例如把条目拖到了不接收它的画布上）：以 self.images 为准重建
+            self._sync_list()
+            return
+        self.images = order
+        self.idx = order.index(cur) if cur is not None and cur in order else self.idx
+        self.file_list.mark_current(self.idx)
 
     def _delete_paths(self, paths: list[Path]) -> None:
         if not paths:
