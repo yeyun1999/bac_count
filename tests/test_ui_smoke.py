@@ -333,8 +333,7 @@ def test_export_batch(qtbot, monkeypatch, tmp_path):
     """批量导出：PNG→文件夹、CSV 一图一行、JSON 含路径/参数/菌落。"""
     import csv as _csv
     import json as _json
-
-    from PySide6.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
 
     files = sorted(SAMPLE_DIR.glob("*.png"))[:2]
     w = MainWindow()
@@ -347,9 +346,14 @@ def test_export_batch(qtbot, monkeypatch, tmp_path):
                         staticmethod(lambda *a, **k: str(tmp_path)))
     monkeypatch.setattr(QFileDialog, "getSaveFileName",
                         staticmethod(lambda *a, **k: (str(tmp_path / "out"), "")))
+    # 未打开过的图会先弹一次"沿用当前图参数"确认框：记下文案再放行
+    asks: list[str] = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asks.append(a[2]) or QMessageBox.Yes))
     w.export_png()
     w.export_csv()
     w.export_json()
+    assert len(asks) == 3 and all("从未在窗口里打开过" in t for t in asks)
     assert len(list((tmp_path / "annotated").glob("*.png"))) == 2
     rows = list(_csv.reader(open(tmp_path / "out.csv", encoding="utf-8-sig")))
     assert rows[0][:2] == ["文件名", "菌落数量"] and len(rows) == 3  # 表头+2图
@@ -692,4 +696,213 @@ def test_load_large_jpg_without_alpha(qtbot, tmp_path):
     assert w.alpha is None, "JPG 不该有 alpha"
     assert w.scale < 1.0, "图应被缩到工作尺寸（才会触发缩放分支）"
     assert w.bgr is not None
+    w.close()
+
+
+def test_stale_result_not_applied_across_image_switch(qtbot, monkeypatch):
+    """检测在途时切图：旧图返回的结果必须被丢弃，不能当成新图的结果（串图）。
+
+    回归：`load_current` 不推进 `_seq`、`request_detection` 忙时也不自增 →
+    旧任务回来时 `seq < self._seq` 为假 → 图1的 51 个菌落被画到图2的画布上，
+    状态栏也是图1的计数；用户在几百毫秒里看到（并可能截图记录）的数是错的。
+
+    采样点很关键：同一信号有多个接收者时 Qt 不保证调用顺序（实测后连接的 lambda
+    会先于 MainWindow 的槽跑），所以直接轮询 `w.last_auto` 会"看起来通过"而什么
+    都没验证——这里把 `_on_detection_done` 包一层，在**槽执行完之后**采样。
+    """
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from bac_count.core.pipeline import default_params, run_detection
+    from bac_count.core.preprocess import load_image
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    a, b = files[0], files[1]
+    seen: list[tuple] = []  # (seq, key, 返回的菌落数, 槽执行完后的 last_auto 数)
+    real_slot = MainWindow._on_detection_done
+
+    def spy(self, seq, key, colonies, prep=None):
+        real_slot(self, seq, key, colonies, prep)
+        seen.append((seq, key, len(colonies), len(self.last_auto)))
+
+    monkeypatch.setattr(MainWindow, "_on_detection_done", spy)  # 建窗口前替换：__init__ 连的就是 spy
+    w = MainWindow()
+    qtbot.addWidget(w)
+    w.load_paths([a])  # 不 processEvents → a 的 done 还排在队列里，_busy 已置真
+    assert w._busy, "a 的检测应仍在途"
+    w.load_paths([b])  # 在途期间切图
+
+    t = time.time()
+    while not seen and time.time() - t < 30:
+        QApplication.processEvents()
+        time.sleep(0.005)
+    assert seen, "worker 没有回任何结果"
+    _seq_a, key_a, n_a, applied = seen[0]
+    assert key_a == str(a) and n_a > 0, "先回来的应当是图 a 的非空结果"
+    assert applied == 0, f"旧图结果被采纳了（last_auto={applied}）→ 图1的标注会画到图2上"
+
+    expect = len(run_detection(*load_image(b), default_params(w.params["algorithm"]))[0])
+    t = time.time()  # b 的补发结果最终落地（顺带证明 _busy/_pending 没被过期结果卡死）
+    while time.time() - t < 30:
+        QApplication.processEvents()
+        if any(k == str(b) and n == expect for _s, k, _r, n in seen):
+            break
+        time.sleep(0.005)
+    assert any(k == str(b) and n == expect for _s, k, _r, n in seen), f"b 的结果没落地: {seen}"
+    assert w._lbl_count.text() == f"计数: {expect}"
+    w.close()
+
+
+def test_detection_guard_drops_stale_but_resets_busy(qtbot):
+    """`_on_detection_done` 的两条丢弃条件 + 无条件复位 `_busy`（确定性，不靠线程时序）。
+
+    ① seq 相等但图片键不是当前图 —— 修复前正是这一条被漏掉（切图不推进 _seq）；
+    ② seq 已被更新的任务推进；
+    ③ 丢弃时 `_busy` 照样要复位，否则 `_pending` 那条补发路被堵死，
+       界面永远停在"没有检测结果"（把 `self._busy = False` 挪回 if 里面即复现）。
+    """
+    from bac_count.core.models import Colony
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files[:1])
+    qtbot.wait(600)
+    assert w.last_auto and w._lbl_count.text().startswith("计数:")
+    original = w.last_auto
+
+    # 切到另一张图：seq 推进 + 当前键换成 files[1]
+    w.images = files[:2]
+    w.idx = 1
+    w._seq += 1
+    stale = [Colony(x=1.0, y=1.0, r=2.0) for _ in range(3)]
+
+    w._busy, w._pending = True, False
+    w._on_detection_done(w._seq, str(files[0]), stale, None)  # ① seq 相同、图不对
+    assert w.last_auto is original, "旧图结果被采纳 → 串图"
+    assert not w._busy, "过期结果回来后线程状态没复位"
+
+    w._busy, w._pending = True, False
+    w._on_detection_done(w._seq - 1, str(files[1]), stale, None)  # ② 更旧的 seq
+    assert w.last_auto is original
+
+    w._busy, w._pending = True, True
+    w._on_detection_done(w._seq, str(files[1]), stale, None)  # ③ 采纳并补发
+    assert w.last_auto is stale and w._lbl_count.text() == f"计数: {len(stale)}"
+    assert w._busy and not w._pending, "补发没被触发"
+    w.close()
+
+
+def test_export_untuned_image_inherits_current_params(qtbot, monkeypatch, tmp_path):
+    """没点开过的图：批量导出沿用**当前图参数**（=逐张点开会看到的数），而不是出厂默认。
+
+    回归：_result_for_path 的 `or default_params()` 兜底，让"导入50张→只调了3张→导出"
+    剩下 47 张用出厂参数重算，导出数≠所见数，且完全静默。
+    """
+    import json as _json
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))[:3]
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(600)
+    # 把当前图（files[0]）调成与出厂默认明显不同的一套
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w._on_param_changed("algorithm", "Hough 圆")
+    w._on_param_changed("min_area", 500)
+    w._commit_params()
+
+    tuned, inherited0 = w._params_for_path(files[0])
+    assert not inherited0 and tuned["algorithm"] == "hough" and tuned["min_area"] == 500
+    for p in files[1:]:
+        got, inherited = w._params_for_path(p)
+        assert inherited, f"{p.name} 从未打开过，应标记为兜底"
+        assert got == tuned, "未调参的图应沿用当前图参数（README：新图继承上一张的参数）"
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "out"), "")))
+    asks: list[str] = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asks.append(a[2]) or QMessageBox.Yes))
+    w.export_json()
+    assert len(asks) == 1 and "2 张" in asks[0], "应就 2 张未调参的图征求确认"
+    data = _json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    for item in data["images"]:
+        assert item["params"]["algorithm"] == "hough" and item["params"]["min_area"] == 500
+    w.close()
+
+
+def test_export_reports_per_image_failures(qtbot, monkeypatch, tmp_path):
+    """批量导出里单张失败：弹窗 + 状态栏汇总，其余图照常导出。
+
+    回归：三处 `except Exception: print(...)`——打包成 exe 后
+    `--windows-console-mode=disable` 没有控制台，磁盘满/文件被占全是静默失败。
+    """
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))[:2]
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(400)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(tmp_path)))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    warns: list[tuple] = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warns.append(a) or QMessageBox.StandardButton.Ok))
+
+    real = MainWindow._result_for_path
+
+    def flaky(self, p, decoded=None):
+        if Path(p).name == files[1].name:
+            raise OSError("模拟：磁盘已满")
+        return real(self, p, decoded=decoded)
+
+    monkeypatch.setattr(MainWindow, "_result_for_path", flaky)
+    w.export_png()  # 不许抛到 Qt 槽外
+    assert len(warns) == 1 and "1 项失败" in warns[0][1], warns
+    assert "磁盘已满" in warns[0][2]
+    out = list((tmp_path / "annotated").glob("*.png"))
+    assert len(out) == 1, f"另一张图应照常导出，实得 {out}"
+    assert "失败 1" in w.statusBar().currentMessage()
+    w.close()
+
+
+def test_json_write_failure_is_caught(qtbot, monkeypatch, tmp_path):
+    """`write_full_json` 在批量循环**之外**：异常必须被接住并告知用户。
+
+    回归：它原来裸在外面（GUI 线程未捕获异常，PySide6 把 traceback 打到 stderr，
+    无控制台的 exe 里行为未定义），而且前面所有图的收集工作全部作废。
+    """
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    import bac_count.ui.main_window as mw
+
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(sorted(SAMPLE_DIR.glob("*.png"))[:1])
+    qtbot.wait(400)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "out"), "")))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    criticals: list[tuple] = []
+    monkeypatch.setattr(QMessageBox, "critical",
+                        staticmethod(lambda *a, **k: criticals.append(a) or QMessageBox.StandardButton.Ok))
+
+    def boom(path, items):
+        raise TypeError("Object of type float32 is not JSON serializable")
+
+    monkeypatch.setattr(mw, "write_full_json", boom)
+    w.export_json()  # 修复前：TypeError 直接从 Qt 槽里逃出来
+    assert len(criticals) == 1 and "写入失败" in criticals[0][1]
+    assert "float32" in criticals[0][2]
+    assert not (tmp_path / "out.json").exists()
     w.close()

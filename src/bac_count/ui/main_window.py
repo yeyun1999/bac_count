@@ -283,6 +283,10 @@ class MainWindow(QMainWindow):
 
     def load_current(self) -> None:
         path = self.images[self.idx]
+        # 切图即作废旧图的在途结果：_seq 必须在任何 await 之前推进，否则上一张图
+        # 的检测完成时 seq 仍然相等，旧图的菌落会被画到新图画布上（几百毫秒内
+        # 用户看到并可能截图记录的计数是错的）。
+        self._seq += 1
         try:
             self.bgr, self.alpha = load_image(path)
         except ValueError as e:
@@ -313,27 +317,41 @@ class MainWindow(QMainWindow):
         self.request_detection()
 
     # ------------------------------------------------------------------ 检测调度
+    def _current_key(self) -> str | None:
+        """当前图在 image_params/histories 里的键（无图时 None）。"""
+        if self.images and 0 <= self.idx < len(self.images):
+            return str(self.images[self.idx])
+        return None
+
     def request_detection(self) -> None:
         self._debounce.stop()
         if self.bgr is None:
+            return
+        key = self._current_key()
+        if key is None:
             return
         if self._busy:
             self._pending = True
             return
         self._busy = True
         self._seq += 1
-        self.service.worker.submit.emit(self._seq, self.bgr, self.alpha, dict(self.params))
+        self.service.worker.submit.emit(self._seq, key, self.bgr, self.alpha, dict(self.params))
 
-    def _on_detection_done(self, seq: int, colonies: list, prep=None) -> None:
-        if seq < self._seq:
-            return  # 过期结果
-        self.last_auto = colonies
-        if prep is not None:
-            self.canvas.set_prep_image(bgra_to_qpixmap(prep, None))
+    def _on_detection_done(self, seq: int, key: str, colonies: list, prep=None) -> None:
+        # 线程空出来了——**不管结果过没过期都要复位**，否则过期结果回来时 _pending
+        # 永远补不出去，界面会卡在"没有检测结果"上。
         self._busy = False
-        self._refresh_merge()
+        # _seq 由"提交任务"和"切图"共同推进，代表"当前应该显示什么"的版本；
+        # 再比对结果自带的图片键，双保险：旧图的标注不会画到新图上（串图）。
+        if seq == self._seq and key == self._current_key():
+            self.last_auto = colonies
+            if prep is not None:
+                self.canvas.set_prep_image(bgra_to_qpixmap(prep, None))
+            self._refresh_merge()
         if self._pending:
             self._pending = False
+            # 补发时重新读 self.params/当前图（故意不用提交时的快照）：
+            # 用户在等结果期间又拖了滑杆，要的正是最新参数的结果。
             self.request_detection()
 
     # ------------------------------------------------------------------ 编辑
@@ -360,7 +378,7 @@ class MainWindow(QMainWindow):
 
     def _on_remove_click(self, colony: Colony) -> None:
         result = merge(self.last_auto, self._history().state)
-        if self._history().remove_at(colony.x, colony.y, result.colonies, default_r=max(colony.r, 10)):
+        if self._history().remove_at(colony.x, colony.y, result.colonies):
             self._refresh_merge()
 
     def _undo(self) -> None:
@@ -502,20 +520,70 @@ class MainWindow(QMainWindow):
     def _current_result(self):
         return merge(self.last_auto, self._history().state)
 
-    def _result_for_path(self, p: Path):
+    def _params_for_path(self, p: Path) -> tuple[dict, bool]:
+        """该图该用哪套参数，并回报它是不是"从未打开过"的兜底。
+
+        有快照 → 快照；从未打开过 → **沿用当前图参数**。README 里"新图继承上一张
+        的参数"就是这个语义，批量导出必须与用户逐张点开时看到的数一致
+        （旧写法兜底 `default_params()` → 导出数≠所见数，静默出错）。
+        """
+        snap = self.image_params.get(str(p))
+        if snap is not None:
+            return dict(snap), False
+        return dict(self.params), True
+
+    def _result_for_path(self, p: Path, decoded: tuple | None = None):
         """任意列表图的最终结果：当前图用内存态；其他图按其参数即时重算。
 
+        `decoded` 传入已解码的 (bgr, alpha) 时直接复用——否则批量导出标注图会
+        对每张图解码两遍（4000px 手机照片一次 JPEG 解码实测 84.5ms）。
         返回 (DetectionResult, params_used)。
         """
         key = str(p)
         if self.images and 0 <= self.idx < len(self.images) and self.images[self.idx] == p:
             return self._current_result(), dict(self.params)
-        params = dict(self.image_params.get(key) or default_params())
-        bgr, alpha = load_image(p)
+        params, _inherited = self._params_for_path(p)
+        bgr, alpha = decoded if decoded is not None else load_image(p)
         auto, _ctx, _s = run_detection(bgr, alpha, params)
         hist = self.histories.get(key)
         result = merge(auto, hist.state if hist else EditState())
         return result, params
+
+    def _untuned_images(self) -> list[Path]:
+        """列表里从未被打开过（因此没有参数快照）的图。"""
+        return [p for p in self.images if str(p) not in self.image_params]
+
+    def _confirm_inherited(self, missing: list[Path]) -> bool:
+        """导出前把"这些图将沿用当前图参数"这件事讲到明面上（数据可信度问题）。"""
+        if not missing:
+            return True
+        names = "、".join(p.name for p in missing[:3])
+        if len(missing) > 3:
+            names += f" 等 {len(missing)} 张"
+        ret = QMessageBox.question(
+            self, "确认导出参数",
+            f"有 {len(missing)} 张图片从未在窗口里打开过：{names}。\n\n"
+            "这些图将沿用**当前图片的参数**重新检测（与逐张点开看到的结果一致），"
+            "而不是出厂默认参数。\n\n是否继续导出？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        return ret == QMessageBox.Yes
+
+    def _finish_export(self, done: int, failures: list[str], target: str | Path) -> None:
+        """批量导出收尾：失败必须让用户看见。
+
+        只 `print` 的话——打包成 exe 后 `--windows-console-mode=disable`
+        根本没有控制台（磁盘满/文件被占/编码不支持全成静默失败），
+        所以这里一律走状态栏 + QMessageBox。
+        """
+        if failures:
+            detail = "\n".join(failures[:8])
+            if len(failures) > 8:
+                detail += f"\n…（另有 {len(failures) - 8} 条）"
+            QMessageBox.warning(self, f"{len(failures)} 项失败",
+                                f"成功 {done} 张，失败 {len(failures)} 张：\n\n{detail}")
+            self.statusBar().showMessage(f"导出到 {target}：成功 {done} 张，失败 {len(failures)} 张", 8000)
+        else:
+            self.statusBar().showMessage(f"已导出 {done} 张到 {target}", 6000)
 
     def _iter_with_progress(self, title: str):
         """带进度/取消的批量迭代器；取消则提前结束。"""
@@ -537,18 +605,25 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "导出标注图到文件夹", str(self._export_dir()))
         if not folder:
             return
+        if not self._confirm_inherited(self._untuned_images()):
+            return
         out = Path(folder) / "annotated"
-        out.mkdir(exist_ok=True)
+        try:
+            out.mkdir(exist_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "导出失败", f"无法创建目录 {out}：{e}")
+            return
         n = 0
+        failures: list[str] = []
         for p in self._iter_with_progress("正在导出标注图…"):
             try:
-                bgr, _ = load_image(p)
-                result, _ = self._result_for_path(p)
+                bgr, alpha = load_image(p)
+                result, _ = self._result_for_path(p, decoded=(bgr, alpha))
                 export_png(out / f"{p.stem}_count{result.count}.png", bgr, result.colonies)
                 n += 1
             except Exception as e:
-                print(f"导出失败 {p}: {e}")
-        self.statusBar().showMessage(f"已导出 {n} 张标注图到 {out}", 6000)
+                failures.append(f"{p.name}: {e}")
+        self._finish_export(n, failures, out)
 
     def export_csv(self) -> None:
         if not self.images:
@@ -556,16 +631,23 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getSaveFileName(self, "导出汇总 CSV", str(self._export_dir() / "counts_summary.csv"), "CSV (*.csv)")
         if not f:
             return
+        if not self._confirm_inherited(self._untuned_images()):
+            return
         rows = []
+        failures: list[str] = []
         for p in self._iter_with_progress("正在汇总…"):
             try:
                 result, _ = self._result_for_path(p)
                 rows.append({"name": p.name, "count": result.count, "auto_total": result.auto_total,
                              "added": result.added, "removed": result.removed})
             except Exception as e:
-                print(f"汇总失败 {p}: {e}")
-        write_summary_csv(f, rows)
-        self.statusBar().showMessage(f"已导出 {len(rows)} 行汇总到 {f}", 6000)
+                failures.append(f"{p.name}: {e}")
+        try:
+            write_summary_csv(f, rows)
+        except Exception as e:  # 写盘失败也摆到明面上，不让整批工作静默作废
+            QMessageBox.critical(self, "写入失败", f"{f}\n\n{e}")
+            return
+        self._finish_export(len(rows), failures, f)
 
     def export_json(self) -> None:
         if not self.images:
@@ -573,7 +655,10 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getSaveFileName(self, "导出完整 JSON", str(self._export_dir() / "bac_count_export.json"), "JSON (*.json)")
         if not f:
             return
+        if not self._confirm_inherited(self._untuned_images()):
+            return
         items = []
+        failures: list[str] = []
         for p in self._iter_with_progress("正在导出完整数据…"):
             try:
                 result, params = self._result_for_path(p)
@@ -587,9 +672,15 @@ class MainWindow(QMainWindow):
                     "edits": edits_dict(hist.state if hist else EditState()),
                 })
             except Exception as e:
-                print(f"导出失败 {p}: {e}")
-        write_full_json(f, items)
-        self.statusBar().showMessage(f"已导出 {len(items)} 张图的完整数据到 {f}", 6000)
+                failures.append(f"{p.name}: {e}")
+        try:
+            write_full_json(f, items)
+        except Exception as e:
+            # 这里在批量循环**之外**：不收口的话"收集完所有图才炸"= 前面全部工作作废、
+            # 文件一个字没写，而且异常落在 GUI 线程上（无控制台的 exe 里行为未定义）。
+            QMessageBox.critical(self, "写入失败", f"{f}\n\n{e}")
+            return
+        self._finish_export(len(items), failures, f)
 
     def closeEvent(self, ev) -> None:
         self.service.stop()

@@ -57,3 +57,56 @@ def test_ids_sequential():
     h.add_colony(999, 999, 5)
     r = merge(_auto(3), h.state)
     assert [c.id for c in r.colonies] == [1, 2, 3, 4]
+
+
+# ------------------------------------------------------------------ §1.5 排除区判据
+def test_deleting_one_colony_spares_its_neighbours():
+    """密集平板上删中间那个，只该少一个。
+
+    回归：`_excluded` 旧判据 `dist <= c.r + 0.5 * e.r`，而排除区半径写的是
+    `max(hit.r, 10)` → r=6 的菌落连 11px 内的邻居一起吃掉（菌落直径才 ~12px），
+    且排除区在画布上不可见，用户根本不知道自己删多了。
+    """
+    auto = [Colony(id=i + 1, x=100 + i * 10, y=100, r=6, area=113) for i in range(3)]
+    h = EditHistory()
+    r = merge(auto, h.state)
+    assert h.remove_at(auto[1].x, auto[1].y, r.colonies), "点不中中间那个"
+    r2 = merge(auto, h.state)
+    assert r2.removed == 1 and r2.count == 2
+    assert [(c.x, c.y) for c in r2.colonies] == [(100.0, 100.0), (120.0, 100.0)]
+
+
+def test_bigger_colonies_touching_at_8px_apart_survive():
+    """中心距 8px、半径 6 的两个菌落：删掉一个，另一个必须活着（旧判据阈值 9~11px）。"""
+    auto = [Colony(id=1, x=100, y=100, r=6, area=113), Colony(id=2, x=108, y=100, r=6, area=113)]
+    h = EditHistory()
+    h.remove_at(100, 100, merge(auto, h.state).colonies)
+    r = merge(auto, h.state)
+    assert r.count == 1 and r.colonies[0].x == 108
+
+
+def test_exclusion_region_stores_hit_geometry_only():
+    """排除区几何 = 命中菌落自身的 (x, y, r)，不掺点击容差/manual_r。
+
+    这个几何以后要直接拿去画半透明红圈（§6.1 排除区可视化），
+    掺了容差就会画出比实际影响范围大的圈。
+    """
+    from bac_count.core.models import ExclRegion
+
+    auto = [Colony(id=1, x=100, y=100, r=4, area=50)]
+    h = EditHistory()
+    assert h.remove_at(103, 100, merge(auto, h.state).colonies)  # 靠点击容差命中
+    assert h.state.exclusions == [ExclRegion(x=100.0, y=100.0, r=4.0)]
+
+
+def test_small_exclusion_does_not_grab_distant_big_colony():
+    """判据不加 `c.r`：大菌落不该被远处的小排除区抓到。
+
+    旧写法阈值 = 10 + 0.5×3 = 11.5，圆心距 11 的 r=10 大菌落会被误删。
+    """
+    from bac_count.core.models import EditState, ExclRegion
+
+    big = Colony(id=1, x=11, y=0, r=10, area=314)
+    assert big.dist_to(0, 0) == 11
+    r = merge([big], EditState(exclusions=[ExclRegion(x=0, y=0, r=3)]))
+    assert r.count == 1 and r.removed == 0

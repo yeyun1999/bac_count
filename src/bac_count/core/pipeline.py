@@ -10,13 +10,73 @@ import numpy as np
 from bac_count.core.color import apply_color_filter
 from bac_count.core.dedup import dedup_colonies
 from bac_count.core.models import Colony, ParamSpec
-from bac_count.core.preprocess import make_dish_mask, prepare
+from bac_count.core.preprocess import dish_mask_from_circle, find_dish_circle, prepare
 from bac_count.core.registry import PrepContext, get_detector
 from bac_count.core.split import split_merged
 
-__all__ = ["PRE_SCHEMA", "POST_SCHEMA", "run_detection", "contours_to_colonies", "default_params"]
+__all__ = ["PRE_SCHEMA", "POST_SCHEMA", "run_detection", "contours_to_colonies", "default_params",
+           "UNSET", "WORKING_MAX"]
 
 WORKING_MAX = 1200  # 调参/预览的工作分辨率上限（长边）
+# ⚠ 只降不升：小于 1200px 的图按原尺寸检测（scale=1），大于的缩到 1200（scale<1）。
+# 于是面板参数的口径是「**原图像素**」，长度类在 run_detection 里按 scale 折算
+# （见 _LENGTH_PARAMS/_to_working_params）——但**同一块平板拍得更大时菌落的
+# px² 面积也变大**，min_area/max_area、min_r/max_r 这些绝对像素参数并不会自动等效，
+# 换相机/换分辨率仍需重调参数。要做真正的分辨率无关，得把参数钉在「皿直径
+# = 固定像素」上归一化（优化指南 §1.4 方案 2），那会改动所有 ≤1200px 图的行为，
+# 需连同 sample/ 回归基准一起重定标——属于产品决策，未做。
+
+
+class _Unset:
+    """哨兵：`run_detection(dish_circle=UNSET)` = 没带缓存，内部自己算。
+
+    需要它是因为 `None` 本身是合法缓存值（"这张图确实没找到皿圆"）。
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return "<UNSET>"
+
+
+UNSET: Any = _Unset()
+
+# 面板上的长度/面积参数一律按**原图像素**口径定义（tooltip 写的 "px"/"px²" 就是原图口径），
+# 而检测跑在缩放后的工作图（长边 ≤WORKING_MAX）上 → 不折算的话，同一套参数在
+# 不同分辨率的图上不等价：同一块平板放大 2.5× 后 adaptive 109→58、hough 104→20。
+# key → (0 是否表示"关闭", 折算后的下限)；下限是为了避免"开着的参数"被缩到 0 悄悄失效。
+_LENGTH_PARAMS: dict[str, tuple[bool, int]] = {
+    "block": (False, 3),      # 自适应阈值窗口
+    "blur_k": (True, 1),      # 高斯模糊核
+    "shading": (True, 3),     # 阴影校正中值核
+    "morph_k": (True, 1),     # HSV 形态学核
+    "min_r": (False, 1),      # Hough 半径区间
+    "max_r": (False, 2),
+}
+_AREA_PARAMS: tuple[str, ...] = ("min_area", "max_area")  # 面积按 ×scale² 折算（连续量，不取整）
+
+
+def _to_working_params(params: dict[str, Any], scale: float) -> dict[str, Any]:
+    """原图口径的长度/面积参数 → 工作尺度。scale=1.0 时逐值等价（原样返回副本）。
+
+    不折算的量都是**尺度无关**的：min_circ（4πA/P²）、max_aspect（minAreaRect 长宽比，
+    实测同一平板放大 2.5× 后原始候选的中位 aspect 1.08→1.06，本来就与尺度无关）、
+    Lab 色差容差、dedup/rim/split 的比例、灰度阈值。给它们乘上 scale 反而会误伤。
+    """
+    p = dict(params)
+    if scale >= 1.0:
+        return p
+    s2 = scale * scale
+    for key, (off_ok, lo) in _LENGTH_PARAMS.items():
+        v = p.get(key)
+        if v is None or (off_ok and float(v) <= 0):
+            continue  # 0 = 关闭，折算后仍然是关闭
+        p[key] = max(lo, int(round(float(v) * scale)))
+    for key in _AREA_PARAMS:
+        v = p.get(key)
+        if v is not None:
+            p[key] = float(v) * s2
+    if p.get("min_r") is not None and p.get("max_r") is not None and p["max_r"] <= p["min_r"]:
+        p["max_r"] = p["min_r"] + 1  # 区间塌缩时保住 Hough 的 minRadius<maxRadius
+    return p
 
 # 面板分组顺序 = 检测执行顺序：皿ROI → 预处理 → 算法(+算法参数) → 拆分 → 颜色过滤 → 过滤 → 手动
 PRE_SCHEMA: list[ParamSpec] = [
@@ -107,7 +167,7 @@ def _post_filter(colonies: list[Colony], params: dict[str, Any], dish_mask: np.n
     amin = float(params.get("min_area", 20))
     amax = float(params.get("max_area", 800))
     cmin = float(params.get("min_circ", 0.35))
-    amax_aspect = float(params.get("max_aspect", 4.0))
+    amax_aspect = float(params.get("max_aspect", 4.0))  # 尺度无关量，不做折算（见 _to_working_params）
     out = []
     for c in colonies:
         if not (amin <= c.area <= amax):
@@ -139,10 +199,13 @@ def run_detection(
     alpha: np.ndarray | None,
     params: dict[str, Any],
     work_max: int = WORKING_MAX,
+    dish_circle: Any = UNSET,
 ) -> tuple[list[Colony], PrepContext, float]:
     """在原图上跑检测；内部缩放到工作分辨率。返回菌落为**原图坐标**。
 
     返回 (colonies, ctx, scale)：scale = 工作/原图 比例，UI 用工作坐标时乘 scale。
+    `ctx.dish_circle` 是本次用到的皿圆（工作坐标），可按图缓存后经 `dish_circle=` 传回，
+    省下无 alpha 图上 ~173ms 的 Hough 找圆。
     """
     h, w = bgr.shape[:2]
     scale = min(1.0, work_max / max(h, w))
@@ -152,22 +215,21 @@ def run_detection(
     else:
         wb, wa = bgr, alpha
 
-    dish_mask = make_dish_mask(wb, wa, float(params.get("rim_pct", 0.12)))
-    gray = prepare(wb, wa, dish_mask, params)
-    ctx = PrepContext(bgr=wb, gray=gray, dish_mask=dish_mask, alpha=wa)
+    # 面板参数是原图 px 口径 → 折算到工作尺度，长度 ×scale、面积 ×scale²
+    wp = _to_working_params(params, scale)
+
+    if isinstance(dish_circle, _Unset):
+        dish_circle = find_dish_circle(wb, wa)  # 只依赖图像，与 rim_pct 无关 → 可按图缓存
+    dish_mask = dish_mask_from_circle(dish_circle, wb.shape, float(params.get("rim_pct", 0.12)))
+    gray = prepare(wb, wa, dish_mask, wp)
+    ctx = PrepContext(bgr=wb, gray=gray, dish_mask=dish_mask, alpha=wa, dish_circle=dish_circle)
 
     det = get_detector(params.get("algorithm", "adaptive"))
-    raw = det.detect(ctx, params)
+    raw = det.detect(ctx, wp)
 
-    # 面积参数按原图 px² 定义 → 换算到工作尺度（拆分也要用，碎片须能独立过 min_area）
-    p = dict(params)
-    s2 = scale * scale
-    p["min_area"] = float(params.get("min_area", 20)) * s2
-    p["max_area"] = float(params.get("max_area", 800)) * s2
-
-    raw = split_merged(ctx, raw, p)      # ① 粘连拆分（split_on 关闭时原样返回）
-    raw = apply_color_filter(ctx, raw, params)  # ② 颜色过滤（拆分产物同样参与颜色判定）
-    kept = _post_filter(raw, p, dish_mask)
+    raw = split_merged(ctx, raw, wp)           # ① 粘连拆分（split_on 关闭时原样返回；也要用折算后的 block/面积）
+    raw = apply_color_filter(ctx, raw, params)  # ② 颜色过滤（只看 Lab 距离，与尺度无关）
+    kept = _post_filter(raw, wp, dish_mask)
     if params.get("dedup_on", True):  # ③ 重叠/包含去重（保留大圆）
         kept = dedup_colonies(kept, float(params.get("dedup_ovl", 0.6)))
 

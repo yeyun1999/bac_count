@@ -33,7 +33,7 @@ src/bac_count/
 ├── __main__.py / __init__.py      # 入口 → ui.main_window.run()
 ├── core/                          # 纯逻辑层：零 Qt 依赖，可单测
 │   ├── models.py (98)             # Colony/ExclRegion/EditState/DetectionResult/ParamSpec + merge()
-│   ├── preprocess.py (106)        # load_image / make_dish_mask / prepare（预处理链）
+│   ├── preprocess.py (106)        # load_image / find_dish_circle+dish_mask_from_circle / prepare（预处理链）
 │   ├── pipeline.py (191)          # run_detection 总调度 + PRE/POST_SCHEMA + default_params
 │   ├── registry.py (46)           # Detector ABC + @register 注册表 + PrepContext
 │   ├── detectors/{threshold,adaptive,blob,hough,hsv}.py   # 5 个算法，一文件一个
@@ -106,10 +106,19 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 ```
 极性统一后所有算法只处理暗色目标（SimpleBlobDetector 固定 blobColor=0）。
 
-### 5.5 培养皿 ROI（make_dish_mask）
-- 优先 alpha 通道（样例图皿外透明）→ 最大轮廓 minEnclosingCircle → 半径 ×(1−rim_pct)。
-- 无 alpha 时 HoughCircles 找大圆兜底；再失败返回 None（全图可检测）。
+### 5.5 培养皿 ROI（find_dish_circle + dish_mask_from_circle）
+- **两步拆开**：`find_dish_circle(bgr, alpha)` 只依赖图像内容，优先 alpha 通道
+  （样例图皿外透明）→ 最大轮廓 minEnclosingCircle，无 alpha 时 HoughCircles 找大圆兜底，
+  再失败返回 None；`dish_mask_from_circle(circle, shape, rim_pct)` 是纯几何——
+  半径 ×(1−rim_pct) 画掩膜。`make_dish_mask` 保留为两步合一的兼容入口。
+- 拆的理由是**缓存**：无 alpha 时找圆要跑 Hough（1200px 实测 172.8ms，占 run_detection
+  的 71%），而它跟 rim_pct 及其他参数都无关。`run_detection(..., dish_circle=...)`
+  可传入缓存值（`UNSET` 哨兵表示没缓存，因为 None 是合法的"确实没找到皿"），
+  `ctx.dish_circle` 回传供调用方缓存；`ui/worker.py` 的 `DetectWorker` 按数组身份
+  做**单槽**缓存（换图即替换，绝不能用模块级 lru_cache：ndarray 不可哈希且会跨图泄漏整图内存）。
 - 后处理要求菌落中心落在 mask 内。
+- Hough 找圆的参数是模块常量（`_DISH_DP/_DISH_PARAM1/_DISH_PARAM2/_DISH_R_LO/_DISH_R_HI`）
+  并带取值依据注释，与菌落检测的 Hough（`detectors/hough.py`，可调 param1/param2）是两套。
 
 ### 5.6 粘连拆分（split.py 108 行，默认关，pipeline 在检测后、颜色过滤前调用）
 纯距离变换 + 分水岭，无碎片守卫（守卫版历史见 git `d5cf6c7`）：
@@ -319,6 +328,16 @@ class Mine(Detector):
 - 批量无交互处理、CFU=计数×稀释倍数、多语言：均 P2 未动。
 - 检测在工作分辨率(≤1200px)跑，导出时 `_result_for_path` 也是同样缩放——
   若要求导出精度与显示完全一致，需加"原图全分辨率重算"路径。
+- **参数口径 = 原图像素**：`run_detection` 里 `_to_working_params` 把长度类参数
+  （block/blur_k/shading/morph_k/min_r/max_r）×scale、面积类（min_area/max_area）×scale²
+  折算到工作尺度，0 表示"关闭"的核保持关闭；圆度/长宽比/Lab 容差/各类比例**不折算**
+  （实测与尺度无关）。改任何缩放/参数逻辑前先看这条，并跑 `tests/test_scale.py`
+  （含 cv2 实参捕获，防止"参数单位不一致"回潮）。
+  ⚠ 单位一致 ≠ 跨分辨率计数一致：同一块平板拍得更大时菌落的 px² 面积真的按倍数涨，
+  min_area/max_area/min_r/max_r 按定义会判它们超限（实测同一图放大 2.5× 后
+  adaptive 109→75、hough 104→14）。**换相机/换分辨率必须重调参数**，预设不跨分辨率迁移；
+  要真正尺度无关得把参数钉在"皿直径=固定像素"上归一化（会改动 ≤1200px 图的行为、
+  `sample/` 的人工计数基准要一起重定标），未做。
 
 ## 11. 仓库约定
 

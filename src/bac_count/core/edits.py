@@ -27,8 +27,13 @@ class EditHistory:
         self.state.additions.append(c)
         return c
 
-    def remove_at(self, x: float, y: float, colonies: list[Colony], default_r: float = 10.0) -> bool:
-        """删除模式下点击：命中最近的菌落。手动菌落直接移除；自动菌落记排除区。"""
+    def remove_at(self, x: float, y: float, colonies: list[Colony]) -> bool:
+        """删除模式下点击：命中最近的菌落。手动菌落直接移除；自动菌落记排除区。
+
+        排除区几何 = **命中菌落自身**的 (x, y, r)；点击容差（`_hit` 里的
+        `max(c.r + 4, 10)`）只用来决定"点中了谁"，不参与排除区大小，
+        否则删一个会连带吃掉邻居（见 models._excluded）。
+        """
         hit = self._hit(x, y, colonies)
         if hit is None:
             return False
@@ -36,9 +41,7 @@ class EditHistory:
         if hit.source == "manual" and hit in self.state.additions:
             self.state.additions.remove(hit)
         else:
-            self.state.exclusions.append(
-                ExclRegion(x=hit.x, y=hit.y, r=max(hit.r, default_r))
-            )
+            self.state.exclusions.append(ExclRegion(x=hit.x, y=hit.y, r=hit.r))
         return True
 
     @staticmethod
