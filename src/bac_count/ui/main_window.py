@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from bac_count.core.edits import EditHistory
+from bac_count.core.edits import EditHistory, resolve_manual_r
 from bac_count.core.export import colony_dict, edits_dict, export_png, write_full_json, write_summary_csv
 from bac_count.core.models import Colony, EditState, merge
 from bac_count.core.pipeline import POST_SCHEMA, PRE_SCHEMA, WORKING_MAX, default_params, run_detection
@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
 
     def _on_add_click(self, sx: float, sy: float) -> None:
         x, y = sx / self.scale, sy / self.scale
-        self._history().add_colony(x, y, float(self.params.get("manual_r", 6.0)))
+        self._history().add_colony(x, y, resolve_manual_r(self.last_auto, self.params.get("manual_r", 0.0)))
         self._refresh_merge()
 
     def _on_remove_click(self, colony: Colony) -> None:

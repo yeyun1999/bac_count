@@ -110,3 +110,35 @@ def test_small_exclusion_does_not_grab_distant_big_colony():
     assert big.dist_to(0, 0) == 11
     r = merge([big], EditState(exclusions=[ExclRegion(x=0, y=0, r=3)]))
     assert r.count == 1 and r.removed == 0
+
+
+# ------------------------------------------------------------------ 手动半径（0=自动中位数）
+def test_resolve_manual_r_uses_median_of_auto():
+    from bac_count.core.edits import resolve_manual_r
+
+    cols = [Colony(r=4), Colony(r=6), Colony(r=8), Colony(r=10)]
+    assert resolve_manual_r(cols, 0.0) == 7.0          # 偶数个取中间两项均值
+    assert resolve_manual_r([Colony(r=5), Colony(r=9), Colony(r=7)], 0) == 7.0
+
+
+def test_resolve_manual_r_explicit_value_wins():
+    from bac_count.core.edits import resolve_manual_r
+
+    assert resolve_manual_r([Colony(r=4), Colony(r=4)], 12.5) == 12.5
+    assert resolve_manual_r([], 3.0) == 3.0  # 显式值优先，哪怕没有已检出菌落
+
+
+def test_resolve_manual_r_falls_back_when_nothing_detected():
+    from bac_count.core.edits import DEFAULT_MANUAL_R, resolve_manual_r
+
+    assert DEFAULT_MANUAL_R == 6.0
+    assert resolve_manual_r([], 0) == DEFAULT_MANUAL_R
+    assert resolve_manual_r([], None) == DEFAULT_MANUAL_R  # 预设缺键也不炸
+    assert resolve_manual_r([Colony(r=0.0)], 0) == DEFAULT_MANUAL_R  # 半径全被夹到 0
+
+
+def test_manual_r_default_is_auto_mode():
+    from bac_count.core.pipeline import default_params
+
+    assert default_params()["manual_r"] == 0.0
+    assert default_params("hough")["manual_r"] == 0.0

@@ -1,9 +1,28 @@
 """手动编辑操作 + 撤销/重做（纯逻辑，无 Qt 依赖）。"""
 from __future__ import annotations
 
+from statistics import median
+
 from bac_count.core.models import Colony, EditState, ExclRegion
 
-__all__ = ["EditHistory"]
+__all__ = ["EditHistory", "DEFAULT_MANUAL_R", "resolve_manual_r"]
+
+DEFAULT_MANUAL_R = 6.0  # 半径自动模式下没有任何已检出菌落时的兜底
+
+
+def resolve_manual_r(colonies: list[Colony], configured: float) -> float:
+    """「手动菌落半径」的实际取值。
+
+    面板值 >0 → 就按它；**0（默认）= 跟随当前自动检出菌落半径的中位数**，
+    这样点出来的手动菌落和周围的大小看着一致，换一种分辨率/另一种平板都不用重设。
+    没有任何已检出菌落（空列表，或半径都被夹到 0）时退回 `DEFAULT_MANUAL_R`。
+    `colonies` 传自动检出结果（不是 merge 后的列表，否则自己加的菌集会参与中位数）。
+    """
+    r = float(configured or 0.0)
+    if r > 0:
+        return r
+    radii = [c.r for c in colonies if c.r > 0]
+    return float(median(radii)) if radii else DEFAULT_MANUAL_R
 
 
 class EditHistory:

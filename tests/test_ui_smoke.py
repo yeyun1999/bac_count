@@ -1127,3 +1127,50 @@ def test_canvas_takes_focus_on_hover(qtbot):
     enter()
     assert c.hasFocus()
     w.close()
+
+
+def test_manual_add_radius_follows_auto_median(qtbot):
+    """manual_r=0（新默认）→ 手加的菌落半径取**当前自动检出**半径的中位数。
+
+    没有检出任何菌落时退回 6px；面板填 >0 就用字面值。中位数只该看自动结果，
+    手加的不能自己参与（否则连点几下会把半径越拉越偏）。
+    """
+    import math
+
+    import numpy as np
+    import pytest
+
+    from bac_count.core.models import Colony
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files[:1])
+    qtbot.wait(600)
+    assert w.last_auto and w.params["manual_r"] == 0.0
+    med = float(np.median([c.r for c in w.last_auto]))
+
+    def last_manual() -> Colony:
+        manual = [c for c in w._current_result().colonies if c.source == "manual"]
+        assert manual, "没加上菌落"
+        return manual[-1]
+
+    w._on_add_click(10, 10)
+    c0 = last_manual()
+    assert c0.r == pytest.approx(med)
+    assert c0.area == pytest.approx(math.pi * med * med, rel=1e-4)
+
+    # 手加的不参与中位数：再点一次半径仍是自动结果的中位数
+    w._on_add_click(20, 20)
+    assert last_manual().r == pytest.approx(med)
+
+    w.params["manual_r"] = 15.0  # 显式值优先
+    w._on_add_click(30, 30)
+    assert last_manual().r == 15.0
+
+    w.params["manual_r"] = 0.0  # 没有自动检出 → 兜底 6px
+    w.last_auto = []
+    w._on_add_click(40, 40)
+    assert last_manual().r == 6.0
+    w.close()

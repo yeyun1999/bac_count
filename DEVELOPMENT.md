@@ -80,8 +80,16 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 ```
 最终结果 = (自动检测 − 排除区) ∪ 手动添加
 ```
-- 删除一个自动菌落 = 记录 `ExclRegion(x,y,r)`；重检测后，与新候选满足
-  `dist(c, e) <= c.r + 0.5*e.r` 的被剔除 → **调参不丢人工校正**。
+- 删除一个自动菌落 = 记录 `ExclRegion(命中菌落的 x,y,r)`；重检测后，与新候选满足
+  `dist(c, e) <= max(e.r, 3.0)` 的被剔除 → **调参不丢人工校正**。
+  判据**不加 `c.r`**、排除区半径也不掺点击容差（旧写法 `dist <= c.r + 0.5*max(hit.r,10)`
+  在 r=6 的菌落上等于 11px 阈值，而菌落直径才 ~12px，密集平板上"删一个"会连带吃掉
+  紧邻真菌落，且排除区在画布上不可见 → 见 `models._excluded`、`tests/test_edits.py`）。
+  下限 3.0 是给"重检后同一菌落中心略漂几像素"留的余量。
+- 添加手动菌落的半径由 `edits.resolve_manual_r(last_auto, params["manual_r"])` 决定：
+  面板值 **0（默认）= 自动检出菌落半径的中位数**（只看 `last_auto`，手加的不参与，
+  否则连点几下会把半径越拉越偏），没检出任何菌落时兜底 `DEFAULT_MANUAL_R = 6.0`；
+  >0 用字面值。`manual_r` 单位是**原图 px**，与 `Colony.r` 同口径。
 - 删除手动菌落 = 直接从 additions 移除。
 - 合并后统一重编号 id（1..N）。`DetectionResult` 带 auto_total/kept/removed/added 供状态栏。
 - undo/redo：`EditHistory` 每次编辑前存 EditState 深拷贝快照（上限 100），按图片路径各一份。
