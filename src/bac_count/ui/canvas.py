@@ -434,6 +434,11 @@ class Canvas(QGraphicsView):
     def leaveEvent(self, ev) -> None:
         if self._picking:
             self._loupe.hide()
+        if self._hover is not None:
+            # 鼠标移出画布时点亮会僵在最后一个菌落上（笔宽变粗，看着像被选中了）
+            self._hover = None
+            self.setToolTip("")
+            self._redraw_overlay()
         super().leaveEvent(ev)
 
     def wheelEvent(self, ev) -> None:
@@ -505,7 +510,7 @@ class Canvas(QGraphicsView):
             return
         super().mouseMoveEvent(ev)
         scene_pos = self.mapToScene(ev.position().toPoint())
-        hit = self._hit(scene_pos.x(), scene_pos.y())
+        hit = self._hit(scene_pos.x(), scene_pos.y())  # 与点击同一判据：落在圈内
         if hit is not self._hover:
             self._hover = hit
             self._redraw_overlay()
@@ -520,10 +525,18 @@ class Canvas(QGraphicsView):
         super().mouseReleaseEvent(ev)
 
     def _hit(self, sx: float, sy: float) -> Colony | None:
+        """命中判定（场景坐标）：光标必须**落在菌落圈内**，不含额外容差。
+
+        判定半径 = `_redraw_overlay` 真正画出来的半径 `max(c.r*scale, 3)`——所见即所判，
+        不会出现"圈还没进到就点亮/就被删掉"。
+        悬停、添加、删除三条路都用这一条（以前点击额外带 `max(r+4, 10)` 的容差，
+        几像素的菌落会被"隔空"选中，看着像误触）。菌落太小不好点中时**先放大视图**：
+        放大后 1 个屏幕像素对应的场景距离变小，圈内的落点就能精确戳到。
+        """
         best, best_d = None, None
         for c in self._colonies:
             d = ((c.x * self._scale - sx) ** 2 + (c.y * self._scale - sy) ** 2) ** 0.5
-            if d <= max(c.r * self._scale + 4, 10) and (best_d is None or d < best_d):
+            if d <= max(c.r * self._scale, 3.0) and (best_d is None or d < best_d):
                 best, best_d = c, d
         return best
 

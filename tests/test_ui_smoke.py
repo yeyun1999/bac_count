@@ -906,3 +906,134 @@ def test_json_write_failure_is_caught(qtbot, monkeypatch, tmp_path):
     assert "float32" in criticals[0][2]
     assert not (tmp_path / "out.json").exists()
     w.close()
+
+
+def test_hover_highlights_only_when_cursor_inside_colony(qtbot, tmp_path):
+    """鼠标**划过菌落附近**不该把它点亮——只有光标落在圈内才高亮。
+
+    原来 hover 走的是带点击容差的 `_hit`（`max(r*scale+4, 10)`）：菌落只有几个像素时
+    10px 的"最小容差"比菌落本身还大，鼠标离得老远就亮起一圈、状态栏 tooltip 也跟着变，
+    看起来像被选中了。现在 `_hit` 只有一条判据 = `_redraw_overlay` 真正画出来的半径
+    （`max(c.r*scale, 3)`），悬停/添加/删除共用；不好点中时放大视图即可。
+    """
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import QSettings, QPointF
+    from PySide6.QtWidgets import QApplication
+
+    from bac_count.core.models import Colony
+
+    img = np.full((240, 240, 3), 230, np.uint8)
+    cv2.circle(img, (120, 120), 12, (60, 60, 60), -1)
+    f = tmp_path / "scene.png"
+    assert cv2.imwrite(str(f), img)
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    w.show()
+    qtbot.waitExposed(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths([f])
+    qtbot.wait(300)  # 让检测结果先落地，之后再注入我们自己的几何
+    c = w.canvas
+    col = Colony(id=1, x=120.0, y=120.0, r=12.0, area=452.0)
+    c.set_colonies([col], 1.0)  # 场景坐标 = 原图坐标，便于按像素算
+
+    def move_to(sx: float, sy: float) -> None:
+        qtbot.mouseMove(c.viewport(), pos=c.mapFromScene(QPointF(sx, sy)))
+        QApplication.processEvents()
+
+    move_to(120, 120)  # 圈内（圆心）
+    assert c._hover is col
+    assert c.toolTip().startswith("#1")
+
+    move_to(130, 120)  # 圈内边缘（d=10 ≤ r=12）
+    assert c._hover is col
+
+    move_to(134, 120)  # 圈外 d=14：旧的 hover 容差 max(12+4,10)=16 会点亮，现在不会
+    assert c._hover is None, "圈外 2px 就被选中了"
+    assert c.toolTip() == ""
+
+    move_to(145, 120)  # 更远 d=25：两种判据都不该命中
+    assert c._hover is None
+
+    # 点击与悬停同判据：圈外一律不命中（不好点中就放大视图）
+    assert c._hit(134, 120) is None
+    assert c._hit(130, 120) is col
+
+    # 极小菌落：判定半径跟画出来的半径一致（_redraw_overlay 有 3px 下限），
+    # 否则缩放视图下 r<1px 的菌落永远悬停不上
+    tiny = Colony(id=2, x=50.0, y=50.0, r=0.5, area=1.0)
+    c.set_colonies([tiny], 1.0)
+    move_to(52, 50)  # d=2 ≤ 画出的 3px
+    assert c._hover is tiny
+    move_to(56, 50)  # d=6 > 3
+    assert c._hover is None
+
+    # 鼠标移出画布：点亮不能僵在最后一个菌落上
+    c.set_colonies([col], 1.0)  # 上一步换成 tiny 后列表里已不含 col
+    move_to(120, 120)
+    assert c._hover is col
+    from PySide6.QtCore import QEvent
+
+    QApplication.sendEvent(c, QEvent(QEvent.Type.Leave))
+    QApplication.processEvents()
+    assert c._hover is None and c.toolTip() == "", "移出画布后高亮残留"
+    w.close()
+
+
+def test_click_requires_cursor_inside_colony(qtbot, tmp_path):
+    """添加/删除的点击与悬停**同一条判据**：必须落在这只菌落的圈里。
+
+    以前点击带 `max(r+4, 10)` 容差：菌落只有几个像素时会被"隔空"选中/删掉，
+    误触完全看不出来。现在圈外一律不命中——删除模式点圈外什么都不发生；
+    添加模式点圈外（哪怕只隔 2px）就是在空白处加一只。
+    菌落太小不好点中时放大视图：1 个屏幕像素对应的场景距离变小，圈内落点能精确戳到。
+    """
+    import cv2
+    import numpy as np
+    from PySide6.QtCore import QSettings, QPointF, Qt
+    from PySide6.QtWidgets import QApplication
+
+    from bac_count.core.models import Colony
+    from bac_count.ui.canvas import MODE_ADD, MODE_REMOVE
+
+    img = np.full((240, 240, 3), 230, np.uint8)
+    cv2.circle(img, (120, 120), 12, (60, 60, 60), -1)
+    f = tmp_path / "scene.png"
+    assert cv2.imwrite(str(f), img)
+
+    w = MainWindow(settings=QSettings(str(tmp_path / "s.conf"), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    w.show()
+    qtbot.waitExposed(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths([f])
+    qtbot.wait(300)
+    c = w.canvas
+    col = Colony(id=1, x=120.0, y=120.0, r=12.0, area=452.0)
+
+    def click(sx: float, sy: float) -> None:
+        qtbot.mouseClick(c.viewport(), Qt.LeftButton, pos=c.mapFromScene(QPointF(sx, sy)))
+        QApplication.processEvents()
+
+    emitted: list = []
+    c.colonyClicked.connect(lambda hit: emitted.append(hit))
+
+    # 删除模式：圈外 2px 不命中，圈内命中并发出信号
+    w._set_mode(MODE_REMOVE)
+    c.set_colonies([col], 1.0)
+    click(134, 120)
+    assert emitted == [], "圈外 2px 也能删掉菌落 → 点击没走严格判据"
+    click(120, 120)
+    assert emitted == [col]
+
+    # 添加模式：圈内不新增（命中即视为"点在菌落上"），圈外视为空白处新增
+    w._set_mode(MODE_ADD)
+    c.set_colonies([col], 1.0)  # 上一步 _refresh_merge 会把画布列表换成检测结果，重新注入
+    n_add = len(w._history().state.additions)
+    click(120, 120)
+    assert len(w._history().state.additions) == n_add, "点在菌落上却被当成空白处新增了"
+    click(134, 120)
+    assert len(w._history().state.additions) == n_add + 1, "圈外应可正常新增"
+    w.close()
