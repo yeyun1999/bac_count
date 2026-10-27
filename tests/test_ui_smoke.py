@@ -1378,3 +1378,123 @@ def test_order_guard_rebuilds_list_when_entries_disagree(qtbot):
     assert [str(p) for p in w.images] == [str(f) for f in files], "self.images 被污染"
     assert [fl.item(i).toolTip() for i in range(fl.count())] == [str(f) for f in files], "列表没有重建"
     w.close()
+
+
+# ---------------------------------------------------------------- 汇总预览
+
+def test_summary_preview_table_equals_csv_content(qtbot, monkeypatch, tmp_path):
+    """顶部「📊 汇总预览」→ 弹窗表格；表格内容就是「汇总表 CSV」的内容，且窗口里能导出。"""
+    import csv as _csv
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox, QToolBar
+
+    files = sorted(SAMPLE_DIR.glob("*.png"))[:3]
+    w = MainWindow()
+    qtbot.addWidget(w)
+    with qtbot.waitSignal(w.service.worker.done, timeout=20000):
+        w.load_paths(files)
+    qtbot.wait(600)
+    w._on_add_click(50, 50)  # 当前图加一个手动菌落 → 预览必须带上它
+
+    # 按钮在顶部工具栏上（不只是挂在窗口上的快捷键）
+    assert w._a_summary.text() == "📊 汇总预览"
+    on_bar = [a for tb in w.findChildren(QToolBar) for a in tb.actions()]
+    assert w._a_summary in on_bar, "「汇总预览」没出现在工具栏上"
+
+    asks: list[str] = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asks.append(a[2]) or QMessageBox.Yes))
+    w.show_summary_preview()
+    dlg = w._summary_dlg
+    assert dlg is not None and dlg.isVisible()
+    assert asks == [], "预览是只读的，不该弹「沿用当前图参数」确认框"
+
+    m = dlg.model
+    from bac_count.core.export import SUMMARY_HEADERS
+    assert [m.headerData(c, Qt.Horizontal) for c in range(m.columnCount())] == SUMMARY_HEADERS
+    assert m.rowCount() == len(files)
+    table = [[m.index(r, c).data() for c in range(m.columnCount())] for r in range(m.rowCount())]
+    assert [row[0] for row in table] == [p.name for p in files], "行序 = 文件列表顺序"
+    cur = next(row for row in table if row[0] == files[0].name)
+    assert cur[1] == cur[2] + cur[3] - cur[4] and cur[3] == 1, f"手加的菌落没进预览: {cur}"
+    assert "总菌落" in dlg._lbl_info.text()
+
+    # 表格内容 == 走「📤 导出 → 汇总表 CSV」写出来的内容
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "menu"), "")))
+    w.export_csv()
+    csv_rows = list(_csv.reader(open(tmp_path / "menu.csv", encoding="utf-8-sig")))
+    assert csv_rows == [table[0][:0] + ["文件名", "菌落数量", "自动检出", "手动添加", "手动排除"]] + \
+        [[str(v) for v in row] for row in table], "预览表格与导出的 CSV 不一致"
+
+    # 窗口下方的导出按钮：不再重算，写出去的就是表里看到的
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "prev"), "")))
+    qtbot.mouseClick(dlg._btn_export, Qt.LeftButton)
+    from_prev = list(_csv.reader(open(tmp_path / "prev.csv", encoding="utf-8-sig")))
+    assert from_prev == csv_rows, "预览窗口导出的 CSV 与菜单导出的不一致"
+    assert "已导出" in dlg._lbl_info.text()
+
+    # 非模态：预览开着主窗口照样能用；再点一次按钮是刷新，不是叠第二个窗口
+    w._on_add_click(60, 60)
+    w.show_summary_preview()
+    assert w._summary_dlg is dlg and dlg.model.rowCount() == len(files)
+    assert dlg.model.index(0, 1).data() == cur[1] + 1, "刷新后没拿到最新结果"
+    w.close()
+    assert not dlg.isVisible(), "主窗口关了，预览窗口还孤在外面"
+
+
+def test_summary_export_follows_table_sort_order(qtbot, monkeypatch, tmp_path):
+    """点表头排序后导出：CSV 行序跟着**当前显示顺序**（表格所见即所导出）。"""
+    import csv as _csv
+
+    from PySide6.QtCore import Qt
+
+    from PySide6.QtWidgets import QFileDialog
+
+    from bac_count.ui.summary_dialog import SummaryPreview
+
+    rows = [{"name": f"p{i}.png", "count": c, "auto_total": c, "added": 0, "removed": 0}
+            for i, c in enumerate([10, 9, 100, 3])]
+    dlg = SummaryPreview()
+    qtbot.addWidget(dlg)
+    dlg.set_rows(rows, default_dir=tmp_path)
+    assert not dlg._lbl_fail.isVisibleTo(dlg)  # 没有失败张 → 那行不占位
+
+    # 数字列按**数值**排：不是 "10" < "100" < "3" 那种字符序
+    dlg.table.sortByColumn(1, Qt.DescendingOrder)
+    got = [dlg.model.index(r, 1).data() for r in range(dlg.model.rowCount())]
+    assert got == [100, 10, 9, 3], f"数字列按字符排了: {got}"
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "sorted"), "")))
+    dlg.export_csv()
+    out = list(_csv.reader(open(tmp_path / "sorted.csv", encoding="utf-8-sig")))
+    assert [r[0] for r in out[1:]] == ["p2.png", "p0.png", "p1.png", "p3.png"], out
+    assert [r[1] for r in out[1:]] == ["100", "10", "9", "3"]
+
+    # 再点一次「汇总预览」（= set_rows 刷新）必须保住用户选的排序：否则行序悄悄回到
+    # 文件列表序、表头箭头却还挂着，此时点导出写出去的是文件序 ≠ 屏幕上看到的序。
+    dlg.table.sortByColumn(1, Qt.AscendingOrder)
+    dlg.set_rows(rows, default_dir=tmp_path)
+    assert [dlg.model.index(r, 1).data() for r in range(dlg.model.rowCount())] == [3, 9, 10, 100], \
+        "刷新把排序丢了（行回到列表序，表头箭头还挂着）"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "refreshed"), "")))
+    dlg.export_csv()
+    out2 = list(_csv.reader(open(tmp_path / "refreshed.csv", encoding="utf-8-sig")))[1:]
+    assert [r[1] for r in out2] == ["3", "9", "10", "100"], out2
+
+    # 失败张数摆到明面上（表格里没有它们）
+    dlg.set_rows(rows, ["p9.png: 读取失败"], default_dir=tmp_path)
+    assert dlg._lbl_fail.isVisibleTo(dlg) and "1 张图片汇总失败" in dlg._lbl_fail.text()
+    assert dlg._lbl_fail.toolTip() == "p9.png: 读取失败"
+    assert dlg.model.rowCount() == len(rows)
+    dlg.set_rows(rows, [], default_dir=tmp_path)
+    assert not dlg._lbl_fail.isVisibleTo(dlg)
+
+    # 空表格不给导出（免得写出一份只有表头的 CSV）
+    dlg.set_rows([])
+    assert not dlg._btn_export.isEnabled()
+    dlg.export_csv()
+    assert not (tmp_path / "counts_summary.csv").exists()

@@ -30,6 +30,7 @@ from bac_count.ui.canvas import MODE_ADD, MODE_BROWSE, MODE_REMOVE, Canvas, bgra
 from bac_count.ui.file_list import FileList
 from bac_count.ui.param_panel import ParamPanel
 from bac_count.ui.presets import load_preset, save_preset
+from bac_count.ui.summary_dialog import SummaryPreview
 from bac_count.ui.worker import DetectionService
 
 DEBOUNCE_MS = 150
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self._seq = 0
         self._busy = False
         self._pending = False
+        self._summary_dlg: SummaryPreview | None = None  # 预览窗口复用同一个，再点一次=刷新
 
         self.canvas = Canvas(self)
         self.setCentralWidget(self.canvas)
@@ -164,6 +166,10 @@ class MainWindow(QMainWindow):
         self._a_redo = act("↷", self._redo, "Ctrl+Y", tip="重做 (Ctrl+Y)")
         self._a_undo.setEnabled(False)
         self._a_redo.setEnabled(False)
+        tb.addSeparator()
+
+        self._a_summary = act("📊 汇总预览", self.show_summary_preview, "Ctrl+P",
+                              tip="汇总预览 (Ctrl+P)｜弹窗表格就是「汇总表 CSV」的内容，窗口里可直接导出")
         tb.addSeparator()
 
         menu_btn("📤 导出", [("标注图 PNG（全部图→文件夹）", self.export_png),
@@ -615,6 +621,39 @@ class MainWindow(QMainWindow):
         dlg.setValue(dlg.maximum())
         dlg.close()
 
+    def _collect_summary_rows(self) -> tuple[list[dict], list[str]]:
+        """汇总表内容：一图一行，外加逐张的失败原因。
+
+        预览窗口和 CSV 导出**共用**这一份代码——两条路出来的数必然一样，
+        不会出现"预览看到一个数、导出另一个数"。
+        """
+        rows: list[dict] = []
+        failures: list[str] = []
+        for p in self._iter_with_progress("正在汇总…"):
+            try:
+                result, _ = self._result_for_path(p)
+                rows.append({"name": p.name, "count": result.count, "auto_total": result.auto_total,
+                             "added": result.added, "removed": result.removed})
+            except Exception as e:
+                failures.append(f"{p.name}: {e}")
+        return rows, failures
+
+    def show_summary_preview(self) -> None:
+        """弹窗预览「汇总表 CSV」的内容（只读，不写盘）。"""
+        if not self.images:
+            self.statusBar().showMessage("⚠ 没有图片可预览：先导入图片", 4000)
+            return
+        rows, failures = self._collect_summary_rows()
+        dlg = self._summary_dlg if self._summary_dlg is not None else SummaryPreview(self)
+        self._summary_dlg = dlg
+        dlg.set_rows(rows, failures, self._export_dir())
+        dlg.show()  # 非模态：预览期间还能继续调参/加减菌落，再点一次按钮就是刷新
+        dlg.raise_()
+        dlg.activateWindow()
+        if failures:
+            QMessageBox.warning(self, "部分图片汇总失败", f"{len(failures)} 张未列入表格：\n\n"
+                                                         + "\n".join(failures[:8]))
+
     def export_png(self) -> None:
         if not self.images:
             return
@@ -649,15 +688,7 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm_inherited(self._untuned_images()):
             return
-        rows = []
-        failures: list[str] = []
-        for p in self._iter_with_progress("正在汇总…"):
-            try:
-                result, _ = self._result_for_path(p)
-                rows.append({"name": p.name, "count": result.count, "auto_total": result.auto_total,
-                             "added": result.added, "removed": result.removed})
-            except Exception as e:
-                failures.append(f"{p.name}: {e}")
+        rows, failures = self._collect_summary_rows()
         try:
             write_summary_csv(f, rows)
         except Exception as e:  # 写盘失败也摆到明面上，不让整批工作静默作废
@@ -699,6 +730,8 @@ class MainWindow(QMainWindow):
         self._finish_export(len(items), failures, f)
 
     def closeEvent(self, ev) -> None:
+        if self._summary_dlg is not None:
+            self._summary_dlg.close()  # 非模态子窗口：主窗关了它不能孤在外面
         self.service.stop()
         super().closeEvent(ev)
 

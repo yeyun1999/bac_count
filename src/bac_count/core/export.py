@@ -13,7 +13,13 @@ import numpy as np
 from bac_count.core.imio import imwrite_any
 from bac_count.core.models import Colony, EditState
 
-__all__ = ["draw_overlay", "export_png", "write_summary_csv", "write_full_json"]
+__all__ = ["draw_overlay", "export_png", "write_summary_csv", "write_full_json",
+           "SUMMARY_HEADERS", "SUMMARY_KEYS"]
+
+# 汇总表 CSV 的列（一图一行）。预览窗口照这两个列表建表 → 表头与列顺序
+# 不可能和真正写出去的 CSV 长得不一样。
+SUMMARY_HEADERS = ["文件名", "菌落数量", "自动检出", "手动添加", "手动排除"]
+SUMMARY_KEYS = ["name", "count", "auto_total", "added", "removed"]
 
 COLORS = {"auto": (0, 230, 0), "manual": (0, 160, 255)}  # BGR: 绿=自动 橙=手动
 
@@ -42,9 +48,9 @@ def write_summary_csv(path: str | Path, rows: list[dict]) -> None:
         p = p.with_suffix(".csv")
     with open(p, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["文件名", "菌落数量", "自动检出", "手动添加", "手动排除"])
+        w.writerow(SUMMARY_HEADERS)
         for r in rows:
-            w.writerow([r["name"], r["count"], r["auto_total"], r["added"], r["removed"]])
+            w.writerow([r[k] for k in SUMMARY_KEYS])
 
 
 def write_full_json(path: str | Path, items: list[dict]) -> None:
