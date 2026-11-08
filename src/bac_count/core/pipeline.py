@@ -127,6 +127,12 @@ POST_SCHEMA: list[ParamSpec] = [
                    "颜色与此表任一项接近（小于容差）的候选被去掉。"),
     ParamSpec("drop_tol", "排除色容差", "float", 35.0, group="颜色过滤", min=5.0, max=200.0, step=5.0,
               desc="判定“同色”的阈值。黑字滤不净→调大；菌落与干扰色太接近被误删→调小。"),
+    ParamSpec("filter_on", "启用过滤", "bool", True, group="后处理过滤",
+              desc="面积/圆度/长宽比过滤的总开关：关掉后候选原样保留，用来看清算法到底找出了"
+                   "什么（培养基噪点、拉丝、笔画会一起进来）。漏检严重时先关掉确认不是这里卡太紧；"
+                   "正常计数保持开。注意：关掉后马克笔大圈等巨号候选也会进「合并重叠菌落」，"
+                   "可能反过来吞掉周围菌落使计数变少——想看真正的原始候选请连去重一起关。"
+                   "皿内限制由各算法自带、不受此开关影响。"),
     ParamSpec("min_area", "最小面积(px²)", "int", 20, group="后处理过滤", min=1, max=5000, step=1,
               desc="面积小于此值的候选丢弃（含拆分出的碎片）。调小可检出细小菌落，但噪点变多。"),
     ParamSpec("max_area", "最大面积(px²)", "int", 800, group="后处理过滤", min=10, max=50000, step=10,
@@ -231,8 +237,9 @@ def run_detection(
 
     raw = split_merged(ctx, raw, wp)           # ① 粘连拆分（split_on 关闭时原样返回；也要用折算后的 block/面积）
     raw = apply_color_filter(ctx, raw, params)  # ② 颜色过滤（只看 Lab 距离，与尺度无关）
-    kept = _post_filter(raw, wp, dish_mask)
-    if params.get("dedup_on", True):  # ③ 重叠/包含去重（保留大圆）
+    # ③ 几何过滤总开关：关掉 = 候选原样送去重，用来确认漏检不是面积/圆度卡太紧
+    kept = _post_filter(raw, wp, dish_mask) if params.get("filter_on", True) else raw
+    if params.get("dedup_on", True):  # ④ 重叠/包含去重（保留大圆）
         kept = dedup_colonies(kept, float(params.get("dedup_ovl", 0.6)))
 
     inv = 1.0 / scale

@@ -64,3 +64,32 @@ def test_default_algo_regression_on_samples():
         cols, _ctx, _s = run_detection(bgr, alpha, default_params())
         lo, hi = expected[key]
         assert lo <= len(cols) <= hi, f"{f.name}: {len(cols)} 不在 [{lo},{hi}]"
+
+
+def test_post_filter_switch_default_on(plate):
+    """总开关默认开；关掉后几何过滤被跳过 → 未过滤集合是过滤后集合的超集（去重同关）。"""
+    bgr, alpha, _truth = plate
+    on = default_params("adaptive")
+    assert on["filter_on"] is True
+    cols_on, _ctx, _s = run_detection(bgr, alpha, {**on, "dedup_on": False})
+    cols_off, _ctx, _s = run_detection(bgr, alpha, {**on, "filter_on": False, "dedup_on": False})
+    assert len(cols_off) >= len(cols_on)
+    for c in cols_on:  # 开过滤时留下的每个候选，关掉过滤后都还在
+        assert any(np.hypot(c.x - o.x, c.y - o.y) < 1.0 and c.area == o.area for o in cols_off)
+    # 关掉后应留下被几何规则判超限的候选（笔画/大圈/碎点）
+    assert any(c.area > on["max_area"] or c.area < on["min_area"]
+               or c.circularity < on["min_circ"] or c.aspect > on["max_aspect"]
+               for c in cols_off)
+
+
+def test_post_filter_switch_off_dedup_still_independent(plate):
+    """dedup_on 不受总开关影响；且旧预设缺 filter_on 键时按“开”处理。"""
+    bgr, alpha, _truth = plate
+    p = default_params("adaptive")
+    cols_dedup_on, _c, _s = run_detection(bgr, alpha, {**p, "filter_on": False, "dedup_on": True})
+    cols_dedup_off, _c, _s = run_detection(bgr, alpha, {**p, "filter_on": False, "dedup_on": False})
+    assert len(cols_dedup_on) <= len(cols_dedup_off)  # 去重照常生效
+    legacy = {k: v for k, v in p.items() if k != "filter_on"}
+    n_legacy, _c, _s = run_detection(bgr, alpha, legacy)
+    n_explicit, _c, _s = run_detection(bgr, alpha, {**legacy, "filter_on": True})
+    assert len(n_legacy) == len(n_explicit)

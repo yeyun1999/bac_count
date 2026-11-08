@@ -184,6 +184,19 @@ sample/                            # 5 张真实样例（RGBA PNG ~800px，见 �
 - 存在意义：唯一在**原色图**上做区域分割的算法，灰度无反差时是唯一出路；
   颜色过滤只能删候选、不能发现候选，二者不可互替（用户曾质疑可否删除——结论：保留）。
 
+### 5.10 几何过滤总开关（`filter_on`，默认开，POST_SCHEMA「后处理过滤」组第一行）
+- 只管 `_post_filter` 的四条几何规则（`min_area/max_area/min_circ/max_aspect`）；关=候选原样进
+  后续环节。用途是**诊断**：漏检时先确认不是几何阈值卡太紧，而不是"看算法原始输出"。
+- **不影响**：皿内限制（各 detector 自己 `bitwise_and(dish_mask)`，`hsv.py:65` 等）、
+  `dedup_on`（独立开关）、颜色过滤（`color_on`，在过滤前）、拆分（`split_on`，在过滤前）。
+- ⚠ **实测陷阱**：E0-3 adaptive 51 → 关掉过滤 **6**（不升反降）。原因是巨号候选
+  （马克笔大圈 area≈7800px²、r≈54）进入去重后按"保留大的"吞掉与之重叠的真菌落；
+  同时关掉去重才回到 **76**。⇒ tooltip/README 都写明"想看原始候选请连去重一起关"；
+  回归测试 `test_post_filter_switch_default_on` 用 `dedup_on=False` 做超集断言，
+  正是为了绕开这条干扰去验证"过滤确实被跳过"。
+- 缺键安全：`params.get("filter_on", True)` —— 旧预设 JSON / 每图快照没有这个键时按"开"处理，
+  行为与加开关前逐值等价。
+
 ## 6. 样例数据与算法基线
 
 `sample/` 5 张 RGBA PNG（~800×800，皿外 alpha=0 且 **RGB 为纯黑**）：
@@ -344,7 +357,7 @@ class Mine(Detector):
         ...  # ctx.gray 已保证"菌落为暗色"；返回工作图坐标，后处理由 pipeline 统一过滤
 ```
 再到 `core/detectors/__init__.py` 加一行 import 即完成注册（UI 下拉、预设、测试自动继承）。
-面积/圆度/长宽比过滤**不要**在算法里做，交给 `_post_filter`。
+面积/圆度/长宽比过滤**不要**在算法里做，交给 `_post_filter`（整体受 `filter_on` 总开关控制，见 §5.10）。
 
 ### 加一个面板参数
 在对应 schema 列表加 `ParamSpec`（**desc 必填**，有测试兜底），控件自动生成；
