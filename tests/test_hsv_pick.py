@@ -83,3 +83,68 @@ def test_switch_algorithm_merges_defaults(qtbot, tmp_path):
         w._on_param_changed("algorithm", "HSV 颜色分割")
     assert w.params["hsv_tol"] == 77.0
     w.close()
+
+
+# ---------------------------------------------------------------- 逐色独立检测 ----
+
+A_RGB = (60, 70, 90)      # rgb：深色菌落（HSV≈(50,85,90)）
+B_RGB = (120, 140, 150)   # rgb：浅色菌落 + 一条"皿缘带"（HSV≈(40,51,150)）
+MED_RGB = (210, 190, 180)  # rgb：培养基（HSV≈(10,36,210)，两色窗口都不该罩住它）
+
+
+def _two_color_scene() -> np.ndarray:
+    """A 色菌落 4 个（其中 1 个压在 B 色长带上）+ B 色菌落 2 个。"""
+    img = np.zeros((400, 400, 3), np.uint8)
+    img[:, :] = _bgr(MED_RGB)
+    cv2.rectangle(img, (54, 20), (66, 380), _bgr(B_RGB), -1)      # 细长"皿缘带" ≈4300px²
+    for x, y in [(60, 200), (200, 90), (300, 200), (150, 300)]:   # A 色，第一个压在带上
+        cv2.circle(img, (x, y), 8, _bgr(A_RGB), -1)
+    for x, y in [(250, 120), (320, 320)]:
+        cv2.circle(img, (x, y), 8, _bgr(B_RGB), -1)
+    return img
+
+
+def _hsv(colors, per):
+    p = default_params("hsv")
+    p.update(hsv_colors=[list(c) for c in colors], hsv_per_color=per)
+    return p
+
+
+def test_hsv_per_color_default_off_and_single_color_equivalent():
+    """默认关；单色时两条路径必须逐值等价（不改变现有行为）。"""
+    assert default_params("hsv")["hsv_per_color"] is False
+    img = _two_color_scene()
+    for colors in ([A_RGB], [B_RGB]):
+        n_off = len(run_detection(img, None, _hsv(colors, False))[0])
+        n_on = len(run_detection(img, None, _hsv(colors, True))[0])
+        assert n_off == n_on, f"单色 {colors} 两模式结果应相同：{n_off} vs {n_on}"
+
+
+def test_hsv_per_color_recovers_colony_swallowed_by_band():
+    """并集模式下压在带上的 A 菌落与带粘成一块被 max_area 丢弃；逐色模式救回。"""
+    img = _two_color_scene()
+    off = run_detection(img, None, _hsv([A_RGB, B_RGB], False))[0]
+    on = run_detection(img, None, _hsv([A_RGB, B_RGB], True))[0]
+    assert len(on) == len(off) + 1, f"逐色应比并集多 1 个：{len(off)} → {len(on)}"
+    # 救回的正是压带那个 (60,200)
+    assert any(np.hypot(c.x - 60, c.y - 200) < 6 for c in on)
+    assert not any(np.hypot(c.x - 60, c.y - 200) < 6 for c in off)
+    # 其余菌落不受影响
+    for x, y in [(200, 90), (300, 200), (150, 300), (250, 120), (320, 320)]:
+        assert any(np.hypot(c.x - x, c.y - y) < 6 for c in on), f"({x},{y}) 丢了"
+
+
+def test_hsv_per_color_no_double_count_same_colony():
+    """同一个颜色重复取两次 → 逐色合并必须收成 1 个，不重复计数。"""
+    img = _two_color_scene()
+    single = len(run_detection(img, None, _hsv([A_RGB], True))[0])
+    dup = len(run_detection(img, None, _hsv([A_RGB, A_RGB], True))[0])
+    assert dup == single, f"重复取色不该翻倍：{single} vs {dup}"
+
+
+def test_hsv_per_color_two_colors_scene_matches_union_when_disjoint():
+    """两色互不重叠时（红/绿分处上下），逐色与并集结果一致。"""
+    img = _scene()
+    off = len(run_detection(img, None, _hsv([RED, GREEN], False))[0])
+    on = len(run_detection(img, None, _hsv([RED, GREEN], True))[0])
+    assert off == on == 5, f"并集 {off} / 逐色 {on}，期望都是 5"
